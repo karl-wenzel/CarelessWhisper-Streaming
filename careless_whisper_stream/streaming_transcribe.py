@@ -95,6 +95,9 @@ def transcribe(
     reset_len = (max_sec_context * SAMPLE_RATE) + 360 # 360 is for the mel padding
     try:
         for frame in stream_instance.read():
+            if isinstance(frame, bytes):
+                frame = np.frombuffer(frame, dtype=np.int16).flatten().astype(np.float32) / 32768.0
+
             # save frames for optional save
             frames.extend(frame)
             
@@ -104,7 +107,7 @@ def transcribe(
                 frames.extend(frame.tolist())
                 model.reset(use_stream=True)
                 streamed_spectrogram.reset()
-
+            
             frame_tensor = torch.from_numpy(frame).pin_memory()
             mel_frame = streamed_spectrogram.calc_mel_with_new_frame(frame_tensor.to(model.device, non_blocking=True))
             

@@ -16,8 +16,8 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 seed_everything(SEED, workers=True)
 torch.set_float32_matmul_precision("high")
 
-logs_root = "/mlspeech/data/tomer/streaming_whisper/models/logs"
-ckpt_root = "/mlspeech/data/tomer/streaming_whisper/models/ckpts"
+logs_root = r"C:\Users\karl-\Documents\WhisperFinetuning\LibriSpeech\logs"
+ckpt_root = r"C:\Users\karl-\Documents\WhisperFinetuning\LibriSpeech\ckpts"
 
 whisper_lrs: dict[str, float] = {'tiny': 1.5e-3, 'base': 1e-3, 'small': 5e-4, 'medium': 2.5e-4, 'large': 1.75e-4, 'large-v2': 2e-4}
 
@@ -27,8 +27,8 @@ project_names = {
 
 def train_model(log_output_dir, check_output_dir, model_name, train_set, val_set, train_name, project_name, cfg: Config) -> None:
 
-    Path(log_output_dir).mkdir(exist_ok=True)
-    Path(check_output_dir).mkdir(exist_ok=True)
+    Path(log_output_dir).mkdir(parents=True, exist_ok=True)
+    Path(check_output_dir).mkdir(parents=True, exist_ok=True)
 
     wandblogger = WandbLogger(
         save_dir=log_output_dir,
@@ -65,7 +65,7 @@ def train_model(log_output_dir, check_output_dir, model_name, train_set, val_set
         logger=wandblogger if not cfg.no_logger else False,
         deterministic=True,
         num_sanity_val_steps=1,
-        strategy=cfg.strategy,
+        strategy="auto",
         fast_dev_run=cfg.fast_dev_run,
         # precision="16"
         # accumulate_grad_batches=cfg.gradient_accumulation_steps,

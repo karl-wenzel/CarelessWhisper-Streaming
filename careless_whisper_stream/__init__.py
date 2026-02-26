@@ -4,7 +4,7 @@ import os
 import urllib
 import warnings
 from typing import List, Optional, Union
-
+ 
 import torch
 from tqdm import tqdm
 
@@ -282,24 +282,52 @@ def load_streaming_model(
     in_memory: bool = False,
 ) -> StreamingWhisper:   
     
-    subname = (str(gran) + '-multi') if multilingual else str(gran)
+    # 1. Normalize the path for Windows/Linux compatibility
+    normalized_path = os.path.abspath(name)
     
-    from huggingface_hub import hf_hub_download
+    if os.path.exists(normalized_path):
+        print(f"--- SUCCESS: Found local checkpoint at {normalized_path} ---")
+        ckpt_path = normalized_path
+    else:
+        print(f"--- Path not found locally: {normalized_path}. Checking HuggingFace... ---")
+        subname = (str(gran) + '-multi') if multilingual else str(gran)
+        from huggingface_hub import hf_hub_download
+        try:
+            ckpt_path = hf_hub_download(
+                repo_id="MLSpeech/CarelessWhisper-Streaming", 
+                filename=_STREAMING_MODELS_HF[name][subname], 
+                repo_type="model", 
+                token=True
+            )
+        except KeyError:
+            raise ValueError(f"Could not find local file at {name} and '{name}' is not a valid HF model size.")
 
-    try:
-        ckpt_path = hf_hub_download(repo_id="MLSpeech/CarelessWhisper-Streaming", filename=_STREAMING_MODELS_HF[name][subname], repo_type="model", token=True)
-    except KeyError as e:
-        print(f"Streaming model with the next configs: size {name}, multilingual: {multilingual} and chunk size: {gran} is not available.")
-        
-    checkpoint = torch.load(ckpt_path, weights_only=False)
+    # 2. Load the checkpoint
+    checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    
+    # 3. Handle potential missing metadata in your custom checkpoint
+    # If your train.py didn't save 'dims' or 'cfg', we fall back to defaults
+    if "dims" not in checkpoint:
+        print("Warning: 'dims' not found in checkpoint. Using default 'small' dimensions.")
+        # Default dims for Whisper 'small'
+        dims = ModelDimensions(n_mels=80, n_audio_ctx=1500, n_audio_state=768, 
+                               n_audio_head=12, n_audio_layer=12, n_vocab=51865, 
+                               n_text_ctx=448, n_text_state=768, n_text_head=12, 
+                               n_text_layer=12)
+    else:
+        dims = ModelDimensions(**checkpoint["dims"])
 
-    dims = ModelDimensions(**checkpoint["dims"])
+    # 4. Handle 'cfg' fallback
+    gran_val = checkpoint.get('cfg', {}).get('gran', gran)
+    rank_val = checkpoint.get('cfg', {}).get('rank', 8) # Default LoRA rank
+    extra_blocks = checkpoint.get('cfg', {}).get('extra_gran_blocks', 0)
 
-    model = StreamingWhisper(dims, 
-                             gran=checkpoint['cfg']['gran'], 
-                             rank=checkpoint['cfg']['rank'], 
-                             extra_gran_blocks=checkpoint['cfg']['extra_gran_blocks'])
+    model = StreamingWhisper(dims, gran=gran_val, rank=rank_val, extra_gran_blocks=extra_blocks)
 
-    model.load_state_dict(checkpoint['state_dict'], strict=False)
+    # 5. Extract state dict (Lightning saves it under 'state_dict')
+    state_dict = checkpoint.get("state_dict", checkpoint)
+    
+    # Use strict=False because custom training might include optimizer states or extra keys
+    model.load_state_dict(state_dict, strict=False)
 
     return model.to(device)

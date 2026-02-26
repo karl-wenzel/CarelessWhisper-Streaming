@@ -14,6 +14,5 @@ regex
 soundfile
 tiktoken
 tqdm
-triton
 websockets
 wandb

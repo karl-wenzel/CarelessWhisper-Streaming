@@ -20,5 +20,10 @@ ds_paths = {
         'val': f"{os.environ.get('HOME')}/path/to/datasets/libri_train_960_val.csv",  # used on validation steps.
         'test': f"{os.environ.get('HOME')}/path/to/datasets/libri_train_960_test.csv"  # used on evaluation.
     },
+    'LIBRI-100-ALIGNED': {
+        'train': "E:/Datasets/train-clean-100/LibriSpeechCSV/libri-train-clean-100_train.csv",  # used on training steps.
+        'val': "E:/Datasets/train-clean-100/LibriSpeechCSV/libri-train-clean-100_val.csv",  # used on validation steps.
+        'test': "E:/Datasets/train-clean-100/LibriSpeechCSV/libri-train-clean-100_test.csv"  # used on evaluation.
+    },
     # Add you entries below.
 }
