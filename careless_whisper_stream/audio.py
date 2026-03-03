@@ -6,7 +6,10 @@ from typing import Optional, Union
 
 import wave
 import torch
-import pyaudio
+try:
+    import pyaudio
+except ImportError:
+    pyaudio = None
 import numpy as np
 import soundfile as sf
 import torch.nn.functional as F
@@ -78,6 +81,9 @@ class MyStream:
 
     def open_stream(self):
         if self.simulate_stream or self.relay or self.use_remote_machine: return
+
+        if pyaudio is None:
+            raise RuntimeError("PyAudio is not installed. Live streaming is unavailable.")
 
         self.audio = pyaudio.PyAudio()
         self.stream = self.audio.open(input=True, format=self.inp_dtype, channels=self.channels, rate=self.sample_rate, frames_per_buffer=self.chunk_size)
