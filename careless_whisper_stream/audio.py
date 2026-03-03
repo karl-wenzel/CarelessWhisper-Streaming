@@ -35,7 +35,7 @@ class MyStream:
                  sample_rate: int = 16000, 
                  channels: int = 2, 
                  filename: str = None, 
-                 inp_dtype: any = pyaudio.paInt16, 
+                 inp_dtype: any = None,
                  simulate_stream: bool = False,
                  wav_file: str = None,
                  relay: bool = False,
@@ -49,6 +49,8 @@ class MyStream:
         self.sample_rate = sample_rate
         self.channels = channels
         self.inp_dtype = inp_dtype
+        if self.inp_dtype is None and pyaudio is not None:
+            self.inp_dtype = pyaudio.paInt16
         self.relay = relay
         self.use_latency = use_latency
         self.use_remote_machine = use_remote_machine
