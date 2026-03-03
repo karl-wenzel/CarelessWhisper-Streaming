@@ -7,7 +7,6 @@ numba
 numpy
 pandas
 praatio
-pyaudio
 pytorch_lightning==2.5.0.post0
 regex
 soundfile
