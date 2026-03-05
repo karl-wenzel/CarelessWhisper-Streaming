@@ -16,8 +16,8 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 seed_everything(SEED, workers=True)
 torch.set_float32_matmul_precision("high")
 
-logs_root = "/mlspeech/data/tomer/streaming_whisper/models/logs"
-ckpt_root = "/mlspeech/data/tomer/streaming_whisper/models/ckpts"
+logs_root = f"{os.environ.get('HOME')}/ma/data/models/logs"
+ckpt_root = f"{os.environ.get('HOME')}/ma/data/models/ckpts"
 
 whisper_lrs: dict[str, float] = {'tiny': 1.5e-3, 'base': 1e-3, 'small': 5e-4, 'medium': 2.5e-4, 'large': 1.75e-4, 'large-v2': 2e-4}
 
