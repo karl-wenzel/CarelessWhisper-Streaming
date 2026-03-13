@@ -1,6 +1,8 @@
 import sys
 sys.path.append('.')
 
+import time
+
 import argparse
 from typing import TYPE_CHECKING, List
 
@@ -32,6 +34,7 @@ def transcribe(
     ca_kv_cache: bool = False,
     sa_kv_cache: bool = False,
     use_latency: bool = False,
+    get_times: bool = False,
     pad_trim: bool = False,
     max_sec_context: int = 30,
     streaming_timestamps: bool = False,
@@ -69,7 +72,7 @@ def transcribe(
     
     # frames - used only when filename is given, in order to save a long wav at the end of the conversation.
     frames = []
-    
+
     # first we'll use
     decoding_options = DecodingOptions(
         language=language,
@@ -92,35 +95,59 @@ def transcribe(
     streamed_spectrogram = SpectrogramStream(n_mels=model.dims.n_mels) # default values are whisper default values
 
     texts = []
-    reset_len = (max_sec_context * SAMPLE_RATE) + 360 # 360 is for the mel padding
+    times = []
+    reset_len = (max_sec_context) * SAMPLE_RATE + 360 # 360 is for the mel padding
+    chunk_samples = stream_instance.chunk_size
+    full_text = ""
     try:
         for frame in stream_instance.read():
             # save frames for optional save
             frames.extend(frame)
-            
-            if len(frames) > reset_len: # When we surpass the max_sec_context - reset model (positional embeddings constrain us)
+            if len(frames) >= reset_len: # When we surpass the max_sec_context - reset model (positional embeddings constrain us)
                 frame = np.concatenate((frames[-360:], frame))
                 frames = []
                 frames.extend(frame.tolist())
                 model.reset(use_stream=True)
                 streamed_spectrogram.reset()
+                full_text += " " + texts[-1].text if len(texts) > 0 else ""
+
+            if get_times:
+                torch.cuda.synchronize()
+                start = time.time()
 
             frame_tensor = torch.from_numpy(frame).pin_memory()
             mel_frame = streamed_spectrogram.calc_mel_with_new_frame(frame_tensor.to(model.device, non_blocking=True))
             
             # decode given the new mel frame and print results
             result = model.decode(mel_frame.squeeze(0), decoding_options)
+
+            if get_times:
+                torch.cuda.synchronize()
+                end = time.time()
+                times.append(end - start)
+
+            # useful for debugging
+            # print(full_text +  " "  + result.text)
             
-            print(result.text)
-            
+            result.full_text = full_text + " " + result.text
             texts.append(result)
 
     except KeyboardInterrupt:
         stream_instance.close_stream(frames)
     
     print("Finished capturing audio.")
+
+    # Run another iteration with zeros input frames to finish decoding for local agreement.
+    # if decoding_options.localagreement:
+    #     print("Running local agreement finishing pass...")
+    #     zero_frames = np.zeros((stream_instance.chunk_size), dtype=np.float32)
+    #     zero_frame_tensor = torch.from_numpy(zero_frames).pin_memory()
+    #     mel_frame = streamed_spectrogram.calc_mel_with_new_frame(zero_frame_tensor.to(model.device, non_blocking=True))
+    #     result = model.decode(mel_frame.squeeze(0), decoding_options)
+    #     print(result.text)
+    #     texts.append(result)
     
-    return texts
+    return texts, times
 
 
 def cli():
