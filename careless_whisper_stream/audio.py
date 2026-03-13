@@ -65,12 +65,12 @@ class MyStream:
         self.simulate_stream = simulate_stream
         if self.simulate_stream:
             assert wav_file is not None, "when simulating stream a wav file must be provided."
-            audio = load_audio(wav_file, sample_rate)
-
-            padding_samples = 180
-
-            if pad_trim:
-                self.wav_array = pad_or_trim(audio, length=N_SAMPLES+padding_samples) # wav array
+            if type(wav_file) is not str and not pad_trim: # override a case when we got a loaded buffer already. No need to load it.
+                self.wav_array = pad_or_trim(wav_file.numpy(), length=wav_file.shape[-1]+180) # wav array
+            elif type(wav_file) is not str and pad_trim:
+                self.wav_array = pad_or_trim(wav_file.numpy(), length=N_SAMPLES+180) # wav array
+            elif pad_trim:
+                self.wav_array = pad_or_trim(load_audio(wav_file, sample_rate), length=N_SAMPLES+180) # wav array
             else:
                 self.wav_array = pad_or_trim(audio, length=audio.shape[-1]+padding_samples)
 

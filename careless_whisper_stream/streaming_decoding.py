@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from .streaming_model import StreamingWhisper
     from .model import Whisper
 
+from .hyp_buffer import HypothesisBuffer
 
 @dataclass(frozen=False)
 class DecodingOptions:
@@ -78,6 +79,8 @@ class DecodingOptions:
 
     verbose: bool = True
 
+    # localagreement params
+    localagreement: bool = False
 
 @dataclass(frozen=False)
 class DecodingResult:
@@ -85,7 +88,9 @@ class DecodingResult:
     language: str
     language_probs: Optional[Dict[str, float]] = None
     tokens: List[int] = field(default_factory=list)
+    retired_tokens: List[int] = field(default_factory=list)
     text: str = ""
+    full_text: str = ""
     avg_logprob: float = np.nan
     no_speech_prob: float = np.nan
     temperature: float = np.nan
@@ -322,6 +327,8 @@ class GreedyDecoder(TokenDecoder):
         sum_logprobs += current_logprobs * (tokens[:, -1] != self.eot)
 
         next_tokens[tokens[:, -1] == self.eot] = self.eot
+        if (next_tokens[-1] == self.eot).all():
+            return tokens, True
         tokens = torch.cat([tokens, next_tokens[:, None]], dim=-1)
 
         completed = (tokens[:, -1] == self.eot).all()
@@ -457,6 +464,11 @@ class StreamingDecoder(TokenDecoder):
         self.check_token_index = -n_tokens_look_back - 1
         self.streaming_timestamps = streaming_timestamps
         self.timestamps_map = {-1: 0}
+        self.check_tokens_override = None
+        self.commited_words = None
+        self.discarded_words = None
+        self._times = []
+        self.transcript_buffer = HypothesisBuffer()
         self._reset_timestamps()
 
     def _insert_timestamps(self,  audio_features: Tensor, tokens: Tensor, enc_emb_gran: int):
@@ -476,6 +488,9 @@ class StreamingDecoder(TokenDecoder):
                 examined_token_index += 1
             
             if examined_token_index >= tokens.shape[-1]: break
+
+    def _mark_check_tokens(self, check: bool = True):
+        self.check_tokens_override = check
 
     def _check_last_tokens(self, logits: Tensor, tokens: Tensor, next_tokens: Tensor, check_tokens: bool):
         stable = []
@@ -524,6 +539,7 @@ class StreamingDecoder(TokenDecoder):
             return tokens, completed
 
         # Otherwise, check if last tokens are stable.
+        check_tokens = check_tokens if self.check_tokens_override is None else self.check_tokens_override
         stable, tokens = self._check_last_tokens(logits, tokens, next_tokens, check_tokens)
 
         if all(stable) and next_tokens[0, -1] != self.eot:
@@ -535,7 +551,7 @@ class StreamingDecoder(TokenDecoder):
         sum_logprobs += logprobs[:, -1, next_tokens[0, -1]]
 
         # take last tokens logits to compare on next decode step
-        self.last_logits = logits
+        self.last_logits = logits.clone().detach()
 
         return tokens, completed
 
@@ -549,6 +565,15 @@ class StreamingDecoder(TokenDecoder):
     def finalize(self, tokens, sum_logprobs):
         tokens = F.pad(tokens, (0, 1), value=self.eot)
         return tokens, sum_logprobs.tolist()
+    
+    def local_agreement_words(self, tokens: Tensor, tokenizer: Tokenizer, frame_index: int):
+        words_list = tokenizer.decode(tokens).split()
+        self._times.extend([frame_index for _ in range(len(words_list) - len(self._times))])
+        print(f"frame_index: {frame_index=}\n{self._times=}")
+        self.transcript_buffer.insert(words_list, self._times)
+        self.commited_words = self.transcript_buffer.flush()
+        print(f"{self.commited_words=}\n-------------------------------")
+        return [tokenizer.encode(" ".join(self.commited_words))]
 
 
 class BeamStreamingDecoder(TokenDecoder):
@@ -566,7 +591,7 @@ class BeamStreamingDecoder(TokenDecoder):
         self.eot = eot
         self.pad_token = pad_token # sotlm token
         self.inference = inference
-        self.last_logits: Tensor = None
+        self.last_logits: list = []
         self.temperature = temperature
         self.tokens_look_back = n_tokens_look_back
         self.check_token_index = [4 + 1 for _ in range(n_beams)] # Here I'll save the last index that is relevant for checking.
@@ -575,6 +600,14 @@ class BeamStreamingDecoder(TokenDecoder):
         self.timestamps_map = {}
         self.wait_for_all = wait_for_all
         self.finished_sequences = {}
+        self.check_tokens_override = None
+        self.commited_words = None
+        self.discarded_words = None
+        self.transcript_buffer = HypothesisBuffer()
+        self._times = []
+
+    def _mark_check_tokens(self, check: bool = True):
+        self.check_tokens_override = check
 
     def _get_last_valid_token_index(self, prefix: Tensor):
         indices = torch.where((prefix == self.eot) | (prefix == self.pad_token))[0]
@@ -610,19 +643,60 @@ class BeamStreamingDecoder(TokenDecoder):
         # Continue decoding from the last valid token index.
         return last_valid_token_index, True
 
+    def _check_last_tokens_new(self, prefix: Tensor, logits: Tensor, check_tokens: bool, beam: int):
+        """
+        check two conditions instead one:
+        1. token it still in beam given new chunk.
+        2. token probability gradient is positive.
+        TODO:
+        1. Save for each prefix a probability trajectory per token instead of the whole logits
+        2. Consider the case when two prefixes might use different tokens but  when decoding they are the same.
+        """
+        last_valid_token_index = self._get_last_valid_token_index(prefix)
+
+        if not check_tokens: 
+            return last_valid_token_index, True
+        
+        examined_prob_indices = range(max(last_valid_token_index - self.tokens_look_back, 3), last_valid_token_index)
+        for examined_prob_index in examined_prob_indices:
+            examined_token_index = examined_prob_index + 1
+            examined_token = prefix[examined_token_index]
+            examined_candidates = logits[examined_prob_index].topk(self.n_beams).indices
+
+            if examined_token not in examined_candidates: # Means the last predicted token is out of out topk.
+                # pad with irrelevant tokens
+                prefix[examined_token_index:] = self.pad_token
+                return examined_prob_index, False
+            
+            # instead of saving the full last logits
+            # we can save only the probabilities of the last predicted tokens, and check if they are going up or down. If they are going down, it means that the prediction is not stable, and we should flush.
+            if self.last_logits[beam].shape[-1] > examined_prob_index and self.last_logits[beam][examined_prob_index] > logits[examined_prob_index, examined_token]: # Prob went down, flush
+            # if self.last_logits[beam].shape[-1] > examined_prob_index and \
+            # torch.exp(self.last_logits[beam][examined_prob_index]) - torch.exp(logits[examined_prob_index, examined_token]) < -0.2: # Prob went down, flush
+                prefix[examined_token_index:] = self.pad_token
+                return examined_prob_index, False
+
+        # If nothing was returned during the check, it means that all tokens were stable.
+        # Continue decoding from the last valid token index.
+        return last_valid_token_index, True
+
     def update(self, tokens: Tensor, logits: Tensor, sum_logprobs: Tensor, first_frame: bool = False, check_tokens: bool = False) -> Tuple[Tensor, bool]: 
         if tokens.shape[0] % self.n_beams != 0:
             raise ValueError(f"{tokens.shape}[0] % {self.n_beams} != 0")
 
         scores, sources, finished = {}, {}, {}
-        next_tokens, source_indices, finished_sequences = [], [], []
+        next_tokens, source_indices, finished_sequences = [], [], {}
         logprobs = F.log_softmax(logits.float(), dim=-1)
         
         for beam in range(self.n_beams):
-            
             prefix = tokens[beam] # tokens in this beam.
-            sampling_index, stable = self._check_last_tokens(prefix, logits[beam], check_tokens) if not first_frame else ((tokens.shape[-1] - 1), False)
+            check_tokens = check_tokens if self.check_tokens_override is None else self.check_tokens_override
+
+            # new addition
+            sampling_index, stable = self._check_last_tokens_new(prefix, logits[beam], check_tokens, beam) if not first_frame else ((tokens.shape[-1] - 1), False)
+
             prefix = prefix.tolist() # using list, easier to append to.
+
             # Calculate candidates from the last token index we should check.
             for logprob, token in zip(*logprobs[beam, sampling_index].topk(self.n_beams + 1)):
                 new_logprob = (logprobs[beam, range(3, sampling_index - 1), tokens[beam, 4:sampling_index]].sum() + logprob).item()
@@ -639,32 +713,38 @@ class BeamStreamingDecoder(TokenDecoder):
                 sources[sequence] = beam
 
         # After all beams were checked, and tokens were calculated
-        # Get top n_beams sequences.            
+        # Get top n_beams sequences.
         saved = 0
         for sequence in sorted(scores, key=scores.get, reverse=True):
             if self.wait_for_all and sequence[-1] == self.eot:
                 finished[sequence] = scores[sequence]
-            else:
-                sum_logprobs[len(next_tokens)] = scores[sequence]
-                next_tokens.append(Tensor(sequence).long())
-                source_indices.append(sources[sequence])
+            sum_logprobs[len(next_tokens)] = scores[sequence]
+            next_tokens.append(Tensor(sequence).long())
+            source_indices.append(sources[sequence])
 
-                saved += 1
-                if saved == self.n_beams:
-                    break
+            saved += 1
+            if saved == self.n_beams:
+                break
 
         tokens = torch.nn.utils.rnn.pad_sequence(next_tokens, batch_first=True, padding_value=self.pad_token).to(tokens.device)
         self.inference.rearrange_kv_cache(source_indices)
+
+        # new addition
+        self.last_logits = []
+        for i, source in enumerate(source_indices):
+            self.last_logits.append(logits[source, range(0, tokens[i].shape[-1] - 1), tokens[i][1:]])
 
         if not self.wait_for_all: # greedy stop mode.
             completed = any([self.eot in s for s in next_tokens]) # Greedy stop - Believe any beam that says enough.
             return tokens, completed
 
+        # If we wait for EOT in all beams. regular beam stop mode.
         for sequence in sorted(finished, key=finished.get, reverse=True):
-            if len(self.finished_sequences) >= self.n_beams: break
-            self.finished_sequences[sequence] = finished[sequence]
+            if len(finished_sequences) >= self.n_beams: break
+            finished_sequences[sequence] = finished[sequence]
 
         # we have enough trajectories that reached EOT, in this specific frame.
+        self.finished_sequences = finished_sequences
         completed = len(self.finished_sequences) >= self.n_beams
         return tokens, completed
 
@@ -692,6 +772,15 @@ class BeamStreamingDecoder(TokenDecoder):
         ]
 
         return tokens, sum_logprobs
+
+    def local_agreement_words(self, tokens: Tensor, tokenizer: Tokenizer, frame_index: int):
+        words_list = tokenizer.decode(tokens).split()
+        self._times.extend([frame_index for _ in range(len(words_list) - len(self._times))])
+        print(f"frame_index: {frame_index=}\n{self._times=}")
+        self.transcript_buffer.insert(words_list, self._times)
+        self.commited_words = self.transcript_buffer.flush()
+        print(f"{self.commited_words=}\n-------------------------------")
+        return [tokenizer.encode(" ".join(self.commited_words))]
 
 
 class LogitFilter:
@@ -768,19 +857,34 @@ class DecodingTask:
 
         # decoder: implements how to select the next tokens, given the autoregressive distribution
         if options.stream_decode and options.beam_size in [None, 0]:
+            print(f"Initialized StreamingDecoder with temperature {options.temperature} and tokens_per_frame {options.tokens_per_frame}")
             self.decoder = StreamingDecoder(
                 options.temperature, options.tokens_per_frame, tokenizer.eot, self.inference, options.n_tokens_look_back, options.streaming_timestamps
             )
         elif options.stream_decode and options.beam_size > 0:
+            print(f"Initialized BeamStreamingDecoder with beam size {options.beam_size} and temperature {options.temperature}")
             self.decoder = BeamStreamingDecoder(
                 options.temperature, options.tokens_per_frame, tokenizer.eot, self.inference, options.n_tokens_look_back, options.beam_size, tokenizer.sot_lm, options.wait_for_all
+                # options.temperature, options.tokens_per_frame, tokenizer.eot, self.inference, options.n_tokens_look_back, options.beam_size, tokenizer.eot, options.wait_for_all
             )
-        elif options.beam_size is not None:
-            self.decoder = BeamSearchDecoder(
-                options.beam_size, tokenizer.eot, self.inference, options.patience
-            )
+        elif options.beam_size is not None and options.beam_size > 0:
+            self.decoder = BeamSearchDecoder(options.beam_size, tokenizer.eot, self.inference, options.patience)
+            print(f"Initialized BeamSearchDecoder with beam size {options.beam_size} and patience {options.patience}")
+
+            if self.options.localagreement:
+                self.decoder = BeamStreamingDecoder(
+                    options.temperature, options.tokens_per_frame, tokenizer.eot, self.inference, options.n_tokens_look_back, options.beam_size, tokenizer.sot_lm, options.wait_for_all
+                )
+                self.decoder._mark_check_tokens(False)
         else:
             self.decoder = GreedyDecoder(options.temperature, tokenizer.eot)
+            print(f"Initialized GreedyDecoder with temperature {options.temperature}")
+            
+            if self.options.localagreement:
+                self.decoder = self.decoder = StreamingDecoder(
+                    options.temperature, options.tokens_per_frame, tokenizer.eot, self.inference, options.n_tokens_look_back, options.streaming_timestamps
+                )
+                self.decoder._mark_check_tokens(False)
 
         # logit filters: applies various rules to suppress or penalize certain tokens
         self.logit_filters = []
@@ -978,7 +1082,7 @@ class DecodingTask:
         is_first_frame = self.index == (self.options.gran * (1 + self.options.look_ahead_blocks))
         self._set_ca_kv_cache(True)
         beam_indices = None
-        logits = None
+        # print(f"{audio_features.shape=}")
 
         try:
             for i in range(self.sample_len // 8):
@@ -1029,8 +1133,8 @@ class DecodingTask:
                 if is_first_frame and self.options.streaming_timestamps and self.options.force_first_tokens_timestamps:
                     self.decoder._insert_timestamps(audio_features, self.tokens, self.options.gran)
                 
-                if logits is not None and self.tokens.shape[1] > logits.shape[1]:
-                    self.tokens = self.tokens[:, :logits.shape[1]]
+                # if self.tokens.shape[1] > logits.shape[1]:
+                #     self.tokens = self.tokens[:, :logits.shape[1]]
                 
                 self.decoder.reset()
 
@@ -1073,19 +1177,20 @@ class DecodingTask:
         print("Reset context...")
         num_old_mels = (self.options.gran * (self.options.look_ahead_blocks) * 2) + 2 if self.options.look_ahead_blocks > 0 else (self.options.gran * 2) + 2
         self.mel = torch.cat([self.mel[..., -num_old_mels:], new_mel_frame], dim=-1)
+        self.options.prefix = self.tokens[:, len(self.sot_sequence):].tolist()[0][-self.options.n_tokens_look_back-5:]
+        
+        # save retired tokens
+        self.retired_tokens = self.tokens[:, :len(self.sot_sequence)]
 
-        # Carry a short prefix into the fresh decoding window.
-        self.options.prefix = self.tokens[:, len(self.sot_sequence):].tolist()[0][-self.options.n_tokens_look_back-1:]
         print(f"Modifying tokens! {self.options.prefix=}")
 
         self._refresh_initial_token_state()
         print("Modified tokens!")
-
-        self.tokens = torch.tensor([list(self.initial_tokens)])
+        
+        self.tokens = torch.tensor([list(self.initial_tokens)]) # no need to use repeat, batch is meaningless in stream.
         self.tokens = self.tokens.repeat_interleave(self.n_group, dim=0).to(self.model.device)
-
-        # clear caches and derived state so the
-        # next pass behaves like a fresh first frame with a carried prefix.
+        
+        print(f"Modifying tokens! {self.tokens=}")
         self._caching_inner_reset()
         self.audio_features = torch.zeros((1, self.model.dims.n_audio_ctx, self.model.dims.n_audio_state)).to(self.model.device)
         self.index = self.options.gran * (1 + self.options.look_ahead_blocks)
@@ -1121,11 +1226,12 @@ class DecodingTask:
 
         self.index += self.options.gran # on each decoding call we add more context
         self.frame_counter += 1
-        #print(f"Collected {self.frame_counter} frames...")
+        # print(f"Collected {self.frame_counter} frames...")
 
         if self.mel.shape[-1] >= self.options.maximal_seconds_context * 100: 
             self._reset_after_maximal_context(mel_frame)
         
+        # print(f"{self.mel.shape=}")
         if self.mel.shape[-1] < (self.options.gran * 2 * (self.options.look_ahead_blocks + 1)):
             if (self.options.verbose):
                 print("Decoding Task: skipping first frames...")
@@ -1161,6 +1267,14 @@ class DecodingTask:
         # select the top-ranked sample in each group
         selected = self.sequence_ranker.rank(tokens, sum_logprobs)
         tokens: List[List[int]] = [t[i].tolist() for i, t in zip(selected, tokens)]
+
+        # if self.options.localagreement:
+        #     tokens = self.decoder.local_agreement_words(tokens[0], tokenizer, self.frame_counter)
+        #     self.tokens = torch.tensor(list(self.sot_sequence) + tokens[0]).unsqueeze(0).long().to(self.model.device)
+        #     self.tokens = self.tokens.repeat_interleave(self.n_group, dim=0) if self.n_group > 1 else self.tokens.unsqueeze(0)
+        #     if len(tokens) == 0:
+        #         return self._empty_results()
+        
         texts: List[str] = [tokenizer.decode(t).strip() for t in tokens]
         sum_logprobs: List[float] = [lp[i] for i, lp in zip(selected, sum_logprobs)]
         avg_logprobs: List[float] = [
@@ -1175,7 +1289,7 @@ class DecodingTask:
             raise RuntimeError(f"inconsistent result lengths: {list(map(len, fields))}")
 
         # apply timestamps
-        if self.options.beam_size == 0 or self.options.beam_size is None:
+        if (self.options.beam_size == 0 or self.options.beam_size is None) and hasattr(self.decoder, 'timestamps_map'):
             timed_tokens = tokens.copy()[0]
             for i, index in enumerate(sorted(self.decoder.timestamps_map.keys())):
                 timed_tokens.insert(index + i + 1, self.tokenizer.timestamp_begin + (self.decoder.timestamps_map[index] // 20))
@@ -1191,7 +1305,7 @@ class DecodingTask:
                 no_speech_prob=no_speech_probs,
                 temperature=self.options.temperature,
                 compression_ratio=compression_ratio(texts[0]),
-                timestamps=self.decoder.timestamps_map,
+                timestamps=None if not hasattr(self.decoder, 'timestamps_map') else self.decoder.timestamps_map,
                 timed_tokens=timed_tokens,
                 timed_text=self.tokenizer.decode_with_timestamps(timed_tokens)
             )

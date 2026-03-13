@@ -1,6 +1,8 @@
 import sys
 sys.path.append('.')
 
+import time
+
 import argparse
 from typing import TYPE_CHECKING, List
 
@@ -44,6 +46,7 @@ def transcribe(
     ca_kv_cache: bool = False,
     sa_kv_cache: bool = False,
     use_latency: bool = False,
+    get_times: bool = False,
     pad_trim: bool = False,
     max_sec_context: int = 30,
     streaming_timestamps: bool = False,
@@ -84,7 +87,7 @@ def transcribe(
     
     # frames - used only when filename is given, in order to save a long wav at the end of the conversation.
     frames = []
-    
+
     # first we'll use
     decoding_options = DecodingOptions(
         language=language,
@@ -108,9 +111,10 @@ def transcribe(
     streamed_spectrogram = SpectrogramStream(n_mels=model.dims.n_mels) # default values are whisper default values
 
     texts = []
-    reset_len = (max_sec_context * SAMPLE_RATE) + 360 # 360 is for the mel padding
-    last_mel = None
-
+    times = []
+    reset_len = (max_sec_context) * SAMPLE_RATE + 360 # 360 is for the mel padding
+    chunk_samples = stream_instance.chunk_size
+    full_text = ""
     try:
         stream_iter = iter(stream_instance.read())
         try:
@@ -127,13 +131,17 @@ def transcribe(
 
             # save frames for optional save
             frames.extend(frame)
-            
-            if len(frames) > reset_len: # When we surpass the max_sec_context - reset model
+            if len(frames) >= reset_len: # When we surpass the max_sec_context - reset model (positional embeddings constrain us)
                 frame = np.concatenate((frames[-360:], frame))
                 frames = []
                 frames.extend(frame.tolist())
                 model.reset(use_stream=True)
                 streamed_spectrogram.reset()
+                full_text += " " + texts[-1].text if len(texts) > 0 else ""
+
+            if get_times:
+                torch.cuda.synchronize()
+                start = time.time()
 
             frame_tensor = torch.from_numpy(frame).pin_memory()
 
