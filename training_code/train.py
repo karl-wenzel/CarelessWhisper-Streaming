@@ -3,6 +3,7 @@ import os
 import sys
 import re
 import json
+import faulthandler, sys
 from pathlib import Path
 
 import torch
@@ -19,6 +20,15 @@ sys.path.append(str(ROOT))
 
 from careless_whisper_stream import load_streaming_model
 
+# Add repo root to PYTHONPATH
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.append(str(ROOT))
+
+from careless_whisper_stream import load_streaming_model
+
+# faulthandler.enable()
+# faulthandler.dump_traceback_later(900, repeat=False, file=sys.stderr)
+# print("faulthandler enabled", flush=True)
 
 SEED = 3407
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -166,9 +176,16 @@ def train_model(log_output_dir, check_output_dir, model_name, train_set, val_set
     checkpoint_callback = ModelCheckpoint(
         dirpath=f"{check_output_dir}/checkpoint",
         filename="checkpoint-{epoch:04d}",
-        save_top_k=cfg.top_k,
+        save_top_k=cfg.top_k, # Best model save,
         monitor="val/wer",
-        mode="min",
+        every_n_epochs=1
+    )
+
+    steps_ckpt_callback = ModelCheckpoint(
+        dirpath=f"{check_output_dir}/steps_checkpoint",
+        filename="steps-checkpoint-{step:09d}",
+        save_top_k=-1, # Save all
+        every_n_train_steps=500
     )
 
     callback_list = [checkpoint_callback, LearningRateMonitor(logging_interval="epoch")]
@@ -273,7 +290,17 @@ if __name__ == "__main__":
         warmstart=args.warmstart,
         extra_eval=args.extra_eval,
         save_untrained=args.save_untrained,
+        use_from_ft_ckpt=args.use_from_ft_ckpt,
+        lmdb=args.lmdb,
+        self_supervision=args.self_supervision,
+        slices_num=args.num_slices,
+        random_masking=args.random_masking
     )
+
+    if args.lmdb:
+        # Set lmdb paths for datasets
+        cfg.lmdb_paths = {key: ds_paths[key].get('train-lmdb', None) for key in args.dataset}
+        print(f"Using LMDB paths: {cfg.lmdb_paths}")
 
     if cfg.streaming_train:
         assert cfg.sim_stream == cfg.streaming_train, "When running in full stream mode you must simulate streaming!"
@@ -294,6 +321,17 @@ if __name__ == "__main__":
         else ds_paths[args.dataset]["val"]
     )
 
+    lr_addition = f"_LR-{cfg.learning_rate}"
+    effective_bsize = cfg.batch_size * cfg.gradient_accumulation_steps
+
+    if cfg.random_masking:
+        cfg.name += f"_random-masking{cfg.slices_num}"
+
+    if cfg.lora and cfg.streaming_train:
+        dir_name = f"LoRA_streamed_whisper_{cfg.size}_{'-'.join(cfg.dataset)}_{effective_bsize}_{cfg.name}{lr_addition}_r{cfg.rank}_g{cfg.gran}_eg{cfg.extra_gran_blocks}_top{cfg.top_k}_full-stream{cfg.streaming_train}_random-order{cfg.streaming_random}_fraction{cfg.streaming_fraction}"
+        project_name = "lora"
+    
+    # Run trainer
     train_model(
         log_output_dir=os.path.join(logs_root, dir_name),
         check_output_dir=os.path.join(ckpt_root, dir_name),
