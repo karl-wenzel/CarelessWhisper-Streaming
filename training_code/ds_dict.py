@@ -16,9 +16,9 @@ This file defines a Python dictionary named `ds_paths`, where you should specify
 
 ds_paths = {
     'LIBRI-960-ALIGNED': {
-        'train': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/960csvs/train.csv",  # used on training steps.
-        'val': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/960csvs/val.csv",  # used on validation steps.
-        'test': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/960csvs/test.csv"  # used on evaluation.
+        'train': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/train-960.csv",  # used on training steps.
+        'val': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/dev.csv",  # used on validation steps.
+        'test': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/test.csv"  # used on evaluation.
     },
     # Add you entries below.
 }
