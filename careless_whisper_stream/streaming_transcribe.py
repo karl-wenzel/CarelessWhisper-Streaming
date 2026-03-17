@@ -131,6 +131,7 @@ def cli():
     parser.add_argument("--device", type=str, default="cpu", help="Device to run model inference on.")
     parser.add_argument("--chunk_size", type=int, default=300, help="Chunk size for streaming")
     parser.add_argument("--multilingual", action="store_true", help="Use a multilingual checkpoint if exists.", default=False)
+    parser.add_argument("--local_model_path", type=str, default=None, help="Load the model ckpt from a local path. Overrides model, chunk_size and multilingual settings.")
 
     # Local streaming args
     parser.add_argument("--output_filename", type=str, help="Path to the output audio file when using local streaming")
@@ -165,8 +166,9 @@ def cli():
     chunk_size: int = args.pop("chunk_size")
     multilingual: bool = args.pop("multilingual")
     device: str = args.pop("device")
+    local_ckpt_path: str = args.pop("local_model_path")
 
-    model = load_streaming_model(model_size, chunk_size, multilingual, device)
+    model = load_streaming_model(model_size, chunk_size, multilingual, device, local_ckpt_path)
 
     texts = transcribe(model, **args)
     return texts

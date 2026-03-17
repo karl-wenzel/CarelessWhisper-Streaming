@@ -278,27 +278,42 @@ def load_streaming_model(
     gran: int = 300, 
     multilingual: bool = False,
     device: Optional[Union[str, torch.device]] = None,
-    download_root: str = None,
-    in_memory: bool = False,
+    local_ckpt_path: Optional[str] = None,
 ) -> StreamingWhisper:   
     
-    subname = (str(gran) + '-multi') if multilingual else str(gran)
-    
-    from huggingface_hub import hf_hub_download
-
-    try:
-        ckpt_path = hf_hub_download(repo_id="MLSpeech/CarelessWhisper-Streaming", filename=_STREAMING_MODELS_HF[name][subname], repo_type="model", token=True)
-    except KeyError as e:
-        print(f"Streaming model with the next configs: size {name}, multilingual: {multilingual} and chunk size: {gran} is not available.")
+    if local_ckpt_path is not None:
+        if not os.path.exists(local_ckpt_path):
+            raise FileNotFoundError(f"Local checkpoint not found at: {local_ckpt_path}")
         
+        print(f"Loading local model from {local_ckpt_path}...")
+        ckpt_path = local_ckpt_path
+    else:
+        subname = (str(gran) + '-multi') if multilingual else str(gran)
+        from huggingface_hub import hf_hub_download
+        try:
+            ckpt_path = hf_hub_download(
+                repo_id="MLSpeech/CarelessWhisper-Streaming", 
+                filename=_STREAMING_MODELS_HF[name][subname], 
+                repo_type="model", 
+                token=True
+            )
+            print(f"Downloaded model from Hugging Face hub to: {ckpt_path}")
+        except KeyError:
+            raise ValueError(
+                f"Streaming model with config: size {name}, multilingual: {multilingual}, "
+                f"and chunk size: {gran} is not available."
+            )
+
     checkpoint = torch.load(ckpt_path, weights_only=False)
 
     dims = ModelDimensions(**checkpoint["dims"])
 
-    model = StreamingWhisper(dims, 
-                             gran=checkpoint['cfg']['gran'], 
-                             rank=checkpoint['cfg']['rank'], 
-                             extra_gran_blocks=checkpoint['cfg']['extra_gran_blocks'])
+    model = StreamingWhisper(
+        dims, 
+        gran=checkpoint['cfg']['gran'], 
+        rank=checkpoint['cfg']['rank'], 
+        extra_gran_blocks=checkpoint['cfg']['extra_gran_blocks']
+    )
 
     model.load_state_dict(checkpoint['state_dict'], strict=False)
 
