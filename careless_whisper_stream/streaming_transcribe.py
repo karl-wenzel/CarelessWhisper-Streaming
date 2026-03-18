@@ -36,6 +36,7 @@ def transcribe(
     max_sec_context: int = 30,
     streaming_timestamps: bool = False,
     force_first_tokens_timestamps: bool = False,
+    verbose: bool = True,
     **kwargs
 ) -> List[str]:
     """
@@ -111,7 +112,8 @@ def transcribe(
             # decode given the new mel frame and print results
             result = model.decode(mel_frame.squeeze(0), decoding_options)
             
-            print(result.text)
+            if (verbose):
+                print(result.text)
             
             texts.append(result)
 

@@ -18,6 +18,8 @@ def evaluate():
     parser.add_argument("--multilingual", action="store_true", help="Use multilingual model")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--local_model_path", type=str, default=None, help="Path to local .pt file")
+    parser.add_argument("-verbose", help="Prints additional info while evaluating")
+
     
     # Dataset Setup
     parser.add_argument("--dataset_name", type=str, required=True, help="Key from ds_paths in ds_dict.py")
@@ -60,7 +62,8 @@ def evaluate():
             simulate_stream=True,
             language="en" if not args.multilingual else "auto",
             beam_size=5,
-            temperature=0
+            temperature=0,
+            verbose=False
         )
         
         # transcribe returns a list of result objects for each chunk
@@ -70,8 +73,17 @@ def evaluate():
         else:
             predicted_text = ""
 
-        predictions.append(predicted_text.strip())
-        references.append(str(reference_text).strip())
+        pred = predicted_text.strip()
+        ref = str(reference_text).strip()
+
+        predictions.append(pred)
+        references.append(ref)
+
+        if (args["verbose"]):
+            print("Pred: " + pred)
+            print("Label:" + ref)
+            print("WER: " + jiwer.wer(ref, pred))
+            print("-"*30)
 
     # 4. Metric Calculation
     wer = jiwer.wer(references, predictions)
