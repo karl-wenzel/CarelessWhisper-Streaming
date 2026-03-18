@@ -5,7 +5,7 @@ import torch
 import jiwer
 from tqdm import tqdm
 
-from careless_whisper_stream import load_streaming_model, load_audio
+from careless_whisper_stream import load_streaming_model
 from careless_whisper_stream.streaming_transcribe import transcribe
 from training_code.ds_dict import ds_paths
 
