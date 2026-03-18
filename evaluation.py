@@ -4,10 +4,25 @@ import pandas as pd
 import torch
 import jiwer
 from tqdm import tqdm
+from praatio import textgrid
 
 from careless_whisper_stream import load_streaming_model
 from careless_whisper_stream.streaming_transcribe import transcribe
 from training_code.ds_dict import ds_paths
+
+def extract_text_from_tg(tg_path):
+    """Reconstructs the transcript from a TextGrid using praatio."""
+    try:
+        # Match the implementation in AlignedTextGridDataset
+        tg = textgrid.openTextgrid(tg_path, includeEmptyIntervals=False)
+        text_intervals = tg.getTier("words")
+        
+        # praatio intervals have a .label attribute
+        words = [interval.label for interval in text_intervals if interval.label.strip()]
+        return " ".join(words)
+    except Exception as e:
+        print(f"Error parsing TextGrid {tg_path}: {e}")
+        return ""
 
 def evaluate():
     parser = argparse.ArgumentParser(description="Evaluate CarelessWhisper WER on a dataset")
@@ -57,7 +72,8 @@ def evaluate():
     print(f"Starting evaluation on {len(df)} samples...")
     for _, row in tqdm(df.iterrows(), total=len(df)):
         wav_path = row['wav_path']
-        reference_text = row['raw_text']
+        tg_path = row['tg_path']
+        reference_text = extract_text_from_tg(tg_path)
         
         # Use the transcribe logic from streaming_transcribe.py 
         # setting simulate_stream=True to handle the file as a stream
@@ -78,8 +94,8 @@ def evaluate():
         else:
             predicted_text = ""
 
-        pred = predicted_text.strip()
-        ref = str(reference_text).strip()
+        pred = predicted_text.strip().lower()
+        ref = reference_text.strip().lower()
 
         predictions.append(pred)
         references.append(ref)
@@ -87,7 +103,7 @@ def evaluate():
         if (args.verbose):
             print("Pred: " + pred)
             print("Label:" + ref)
-            print(f"WER: {jiwer.wer(ref, pred)}")
+            print(f"WER: {jiwer.wer(ref, pred):.2%}")
             print("-"*30)
 
     # 4. Metric Calculation
