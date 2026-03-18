@@ -1085,7 +1085,7 @@ class DecodingTask:
 
         self.index += self.options.gran # on each decoding call we add more context
         self.frame_counter += 1
-        print(f"Collected {self.frame_counter} frames...")
+        #print(f"Collected {self.frame_counter} frames...")
 
         if self.mel.shape[-1] >= self.options.maximal_seconds_context * 100: 
             self._reset_after_maximal_context(mel_frame)

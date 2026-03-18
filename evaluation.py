@@ -44,6 +44,12 @@ def evaluate():
     print(f"Loading test split from: {csv_path}")
     df = pd.read_csv(csv_path)
 
+    # Drop rows where raw_text is missing to avoid comparing against 'nan'
+    initial_len = len(df)
+    df = df.dropna(subset=['raw_text'])
+    if len(df) < initial_len:
+        print(f"Warning: Dropped {initial_len - len(df)} rows with missing labels.")
+
     predictions = []
     references = []
 
@@ -81,7 +87,7 @@ def evaluate():
         if (args.verbose):
             print("Pred: " + pred)
             print("Label:" + ref)
-            print("WER: " + jiwer.wer(ref, pred))
+            print(f"WER: {jiwer.wer(ref, pred)}")
             print("-"*30)
 
     # 4. Metric Calculation
