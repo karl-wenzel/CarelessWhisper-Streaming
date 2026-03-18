@@ -304,26 +304,21 @@ def load_streaming_model(
                 f"and chunk size: {gran} is not available."
             )
 
-    checkpoint = torch.load(ckpt_path, weights_only=False)
+    checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
 
-    # 1. Handle different checkpoint structures
-    # If it's a PyTorch Lightning/Trainer checkpoint, the state_dict might be nested
-    state_dict = checkpoint.get("state_dict", checkpoint)
+    hparams = checkpoint.get("hyper_parameters", checkpoint.get("cfg", {}))
     
-    # 2. Resolve Hyperparameters (gran, rank, etc.)
-    # If 'cfg' is missing (local training), fall back to arguments or the 'hyper_parameters' key
-    if 'cfg' in checkpoint:
-        m_gran = checkpoint['cfg']['gran']
-        m_rank = checkpoint['cfg']['rank']
-        m_extra = checkpoint['cfg']['extra_gran_blocks']
-    else:
-        hparams = checkpoint.get("hyper_parameters", {})
-        m_gran = hparams.get("gran", gran) 
-        m_rank = hparams.get("rank", 32)
-        m_extra = hparams.get("extra_gran_blocks", 1)
+    m_gran = hparams.get("enc_emb_gran", hparams.get("gran", gran))
+    m_extra = hparams.get("enc_context", hparams.get("extra_gran_blocks", 0))
+    m_rank = hparams.get("rank", 32)
 
-    # 3. Initialize Model
-    dims = ModelDimensions(**checkpoint["dims"])
+    if "dims" in checkpoint:
+        dims = ModelDimensions(**checkpoint["dims"])
+    else:
+        dims = ModelDimensions(**checkpoint.get("cfg", {}).get("dims", {}))
+
+    print(f"Final Model Params -> Granule: {m_gran}, Extra Blocks: {m_extra}, Rank: {m_rank}")
+
     model = StreamingWhisper(
         dims, 
         gran=m_gran, 
@@ -331,9 +326,11 @@ def load_streaming_model(
         extra_gran_blocks=m_extra
     )
 
-    # 4. Load weights
-    # If loading a local LoRA/FT checkpoint, we use strict=False to ignore 
-    # trainer-specific metadata like optimizer states
+    state_dict = checkpoint.get("state_dict", checkpoint)
+    
+    if any(k.startswith("model.") for k in state_dict.keys()):
+        state_dict = {k.replace("model.", ""): v for k, v in state_dict.items()}
+
     model.load_state_dict(state_dict, strict=False)
 
     return model.to(device)
