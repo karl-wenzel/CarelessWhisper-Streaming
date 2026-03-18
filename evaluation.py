@@ -18,8 +18,7 @@ def evaluate():
     parser.add_argument("--multilingual", action="store_true", help="Use multilingual model")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--local_model_path", type=str, default=None, help="Path to local .pt file")
-    parser.add_argument("-verbose", help="Prints additional info while evaluating")
-
+    parser.add_argument("-verbose", action="store_true", help="Prints additional info while evaluating")
     
     # Dataset Setup
     parser.add_argument("--dataset_name", type=str, required=True, help="Key from ds_paths in ds_dict.py")
@@ -79,7 +78,7 @@ def evaluate():
         predictions.append(pred)
         references.append(ref)
 
-        if (args["verbose"]):
+        if (args.verbose):
             print("Pred: " + pred)
             print("Label:" + ref)
             print("WER: " + jiwer.wer(ref, pred))
