@@ -306,15 +306,34 @@ def load_streaming_model(
 
     checkpoint = torch.load(ckpt_path, weights_only=False)
 
-    dims = ModelDimensions(**checkpoint["dims"])
+    # 1. Handle different checkpoint structures
+    # If it's a PyTorch Lightning/Trainer checkpoint, the state_dict might be nested
+    state_dict = checkpoint.get("state_dict", checkpoint)
+    
+    # 2. Resolve Hyperparameters (gran, rank, etc.)
+    # If 'cfg' is missing (local training), fall back to arguments or the 'hyper_parameters' key
+    if 'cfg' in checkpoint:
+        m_gran = checkpoint['cfg']['gran']
+        m_rank = checkpoint['cfg']['rank']
+        m_extra = checkpoint['cfg']['extra_gran_blocks']
+    else:
+        hparams = checkpoint.get("hyper_parameters", {})
+        m_gran = hparams.get("gran", gran) 
+        m_rank = hparams.get("rank", 32)
+        m_extra = hparams.get("extra_gran_blocks", 1)
 
+    # 3. Initialize Model
+    dims = ModelDimensions(**checkpoint["dims"])
     model = StreamingWhisper(
         dims, 
-        gran=checkpoint['cfg']['gran'], 
-        rank=checkpoint['cfg']['rank'], 
-        extra_gran_blocks=checkpoint['cfg']['extra_gran_blocks']
+        gran=m_gran, 
+        rank=m_rank, 
+        extra_gran_blocks=m_extra
     )
 
-    model.load_state_dict(checkpoint['state_dict'], strict=False)
+    # 4. Load weights
+    # If loading a local LoRA/FT checkpoint, we use strict=False to ignore 
+    # trainer-specific metadata like optimizer states
+    model.load_state_dict(state_dict, strict=False)
 
     return model.to(device)
