@@ -39,16 +39,37 @@ entries = []
 AUDIO_EXTENSIONS = (".wav", ".flac")
 
 for root, _, files in os.walk(args.dataset_root):
+    # 1. First, find and load any transcriptions in this folder
+    transcriptions = {}
+    for file in files:
+        if file.endswith(".trans.txt"):
+            trans_path = os.path.join(root, file)
+            with open(trans_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    parts = line.strip().split(" ", 1)
+                    if len(parts) == 2:
+                        file_id, text = parts
+                        transcriptions[file_id] = text
+
+    # 2. Then, process the audio files
     for file in files:
         if file.endswith(AUDIO_EXTENSIONS):
             audio_path = os.path.join(root, file)
+            file_id = os.path.splitext(file)[0]
+            
             # Compute relative path to maintain structure
             rel_path = os.path.relpath(audio_path, args.dataset_root)
             # Corresponding TextGrid path
             textgrid_path = os.path.join(args.align_root, os.path.splitext(rel_path)[0] + ".TextGrid")
+            
             if os.path.exists(textgrid_path):
-                # raw_text can be empty or derived from filename
-                raw_text = ""  # leave empty if you don’t want to parse transcripts
+                # Look up the actual text using the file ID
+                raw_text = transcriptions.get(file_id, "")
+                
+                if raw_text == "":
+                    print(f"Warning: No transcript found for {file_id} in {root}")
+                    # You can choose to skip here using `continue` if you want to be strict
+                
                 entries.append((audio_path, textgrid_path, raw_text))
             else:
                 print(f"Skipping {audio_path}: missing TextGrid")
