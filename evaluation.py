@@ -33,6 +33,9 @@ def evaluate():
     parser.add_argument("--multilingual", action="store_true", help="Use multilingual model")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--local_model_path", type=str, default=None, help="Path to local .pt file")
+    parser.add_argument("--dataset_fraction", type=float, default=1.0, help="Fraction of the dataset, that will be used. 1.0 (100%) by default.")
+    parser.add_argument("-flush_last_frame", action="store_true", help="Calculates last frame with final spectogram and streaming mode off")
+    parser.add_argument("-pad_last_frame", action="store_true", help="Pads the last frame")
     parser.add_argument("-verbose", action="store_true", help="Prints additional info while evaluating")
     
     # Dataset Setup
@@ -59,6 +62,12 @@ def evaluate():
     print(f"Loading test split from: {csv_path}")
     df = pd.read_csv(csv_path)
 
+    if 0.0 < args.dataset_fraction < 1.0:
+        df = df.sample(frac=args.dataset_fraction, random_state=42).reset_index(drop=True)
+        print(f"Subsetting dataset to {args.dataset_fraction * 100:.1f}%. New size: {len(df)} samples.")
+    elif args.dataset_fraction <= 0 or args.dataset_fraction > 1.0:
+        print(f"Warning: dataset_fraction {args.dataset_fraction} is out of bounds. Using full dataset.")
+
     predictions = []
     references = []
 
@@ -78,6 +87,8 @@ def evaluate():
             language="en" if not args.multilingual else "auto",
             beam_size=5,
             temperature=0,
+            flush_last_frame=args.flush_last_frame,
+            pad_last_frame=args.pad_last_frame,
             verbose=False
         )
         

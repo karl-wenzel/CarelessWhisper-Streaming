@@ -36,6 +36,8 @@ def transcribe(
     max_sec_context: int = 30,
     streaming_timestamps: bool = False,
     force_first_tokens_timestamps: bool = False,
+    flush_last_frame: bool = False,
+    pad_last_frame: bool = False,
     verbose: bool = True,
     **kwargs
 ) -> List[str]:
@@ -126,7 +128,7 @@ def transcribe(
             # 1. Pass is_last to ensure STFT pads the end of the audio correctly
             mel_frame = streamed_spectrogram.calc_mel_with_new_frame(
                 frame_tensor.to(model.device, non_blocking=True), 
-                is_last=is_last,
+                is_last=is_last if pad_last_frame else False,
                 expected_n_frames=(model.encoder.gran * 2) if is_last else None
             )
 
@@ -145,14 +147,15 @@ def transcribe(
             frame = next_frame
         
         # 2. Final "Flush" decode
-        model.eval()
-        with torch.no_grad():
-            # Disable stream_decode for the very last chunk to finalize the sentence.
-            decoding_options.stream_decode = False 
-            if last_mel is not None:
-                # Use the mel generated in the last loop iteration
-                result = model.decode(last_mel.squeeze(0), decoding_options)
-                texts.append(result)
+        if (flush_last_frame):
+            model.eval()
+            with torch.no_grad():
+                # Disable stream_decode for the very last chunk to finalize the sentence.
+                decoding_options.stream_decode = False 
+                if last_mel is not None:
+                    # Use the mel generated in the last loop iteration
+                    result = model.decode(last_mel.squeeze(0), decoding_options)
+                    texts.append(result)
 
     except KeyboardInterrupt:
         stream_instance.close_stream(frames)
