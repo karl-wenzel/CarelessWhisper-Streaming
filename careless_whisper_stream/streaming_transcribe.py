@@ -117,10 +117,25 @@ def transcribe(
             
             texts.append(result)
 
+        # TEST: Provide ~1-2 seconds of silence to let the model finish the last words
+        silence_padding = np.zeros(int(SAMPLE_RATE * 1.0), dtype=np.float32)
+        # Split silence into chunks matching model's expected frame size
+        chunk_size_samples = int(ms_gran * SAMPLE_RATE / 1000)
+        for i in range(0, len(silence_padding), chunk_size_samples):
+            chunk = silence_padding[i : i + chunk_size_samples]
+            if len(chunk) < chunk_size_samples: break
+            
+            frame_tensor = torch.from_numpy(chunk).to(model.device)
+            mel_frame = streamed_spectrogram.calc_mel_with_new_frame(frame_tensor)
+            result = model.decode(mel_frame.squeeze(0), decoding_options)
+            texts.append(result)
+        # -------------------------
+
     except KeyboardInterrupt:
         stream_instance.close_stream(frames)
     
-    print("Finished capturing audio.")
+    if (verbose):
+        print("Finished capturing audio.")
     
     return texts
 
