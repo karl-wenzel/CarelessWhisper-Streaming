@@ -117,6 +117,15 @@ def transcribe(
                 print(result.text)
             
             texts.append(result)
+        
+        model.eval()
+        with torch.no_grad():
+            # try to decode once more with 'stream_decode' off 
+            # for the very last chunk to finalize the sentence.
+            decoding_options.stream_decode = False 
+            final_mel = streamed_spectrogram.log_spec
+            result = model.decode(final_mel, decoding_options)
+            texts.append(result)
 
     except KeyboardInterrupt:
         stream_instance.close_stream(frames)
