@@ -95,12 +95,26 @@ def transcribe(
 
     texts = []
     reset_len = (max_sec_context * SAMPLE_RATE) + 360 # 360 is for the mel padding
+    last_mel = None
+
     try:
-        for frame in stream_instance.read():
+        stream_iter = iter(stream_instance.read())
+        try:
+            frame = next(stream_iter)
+        except StopIteration:
+            return []
+
+        while True:
+            try:
+                next_frame = next(stream_iter)
+                is_last = False
+            except StopIteration:
+                is_last = True
+
             # save frames for optional save
             frames.extend(frame)
             
-            if len(frames) > reset_len: # When we surpass the max_sec_context - reset model (positional embeddings constrain us)
+            if len(frames) > reset_len: # When we surpass the max_sec_context - reset model
                 frame = np.concatenate((frames[-360:], frame))
                 frames = []
                 frames.extend(frame.tolist())
@@ -108,7 +122,13 @@ def transcribe(
                 streamed_spectrogram.reset()
 
             frame_tensor = torch.from_numpy(frame).pin_memory()
-            mel_frame = streamed_spectrogram.calc_mel_with_new_frame(frame_tensor.to(model.device, non_blocking=True))
+            
+            # 1. Pass is_last to ensure STFT pads the end of the audio correctly
+            mel_frame = streamed_spectrogram.calc_mel_with_new_frame(
+                frame_tensor.to(model.device, non_blocking=True), 
+                is_last=is_last
+            )
+            last_mel = mel_frame # Store for the final "flush" decode
             
             # decode given the new mel frame and print results
             result = model.decode(mel_frame.squeeze(0), decoding_options)
@@ -117,15 +137,20 @@ def transcribe(
                 print(result.text)
             
             texts.append(result)
+
+            if is_last:
+                break
+            frame = next_frame
         
+        # 2. Final "Flush" decode
         model.eval()
         with torch.no_grad():
-            # try to decode once more with 'stream_decode' off 
-            # for the very last chunk to finalize the sentence.
+            # Disable stream_decode for the very last chunk to finalize the sentence.
             decoding_options.stream_decode = False 
-            final_mel = streamed_spectrogram.log_spec
-            result = model.decode(final_mel, decoding_options)
-            texts.append(result)
+            if last_mel is not None:
+                # Use the mel generated in the last loop iteration
+                result = model.decode(last_mel.squeeze(0), decoding_options)
+                texts.append(result)
 
     except KeyboardInterrupt:
         stream_instance.close_stream(frames)
