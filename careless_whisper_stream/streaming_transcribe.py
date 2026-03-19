@@ -126,17 +126,9 @@ def transcribe(
             # 1. Pass is_last to ensure STFT pads the end of the audio correctly
             mel_frame = streamed_spectrogram.calc_mel_with_new_frame(
                 frame_tensor.to(model.device, non_blocking=True), 
-                is_last=is_last
+                is_last=is_last,
+                expected_n_frames=model.encoder.gran
             )
-
-            # --- FIX FOR TENSOR MISMATCH ---
-            # Ensure the mel_frame matches the expected gran size (e.g., 15)
-            # if the padding produced a slightly shorter frame.
-            expected_width = model.encoder.gran + (int(not streamed_spectrogram.is_first) == 0 * (model.encoder.extra_gran_blocks * model.encoder.gran))
-            if mel_frame.shape[-1] < expected_width:
-                pad_amt = expected_width - mel_frame.shape[-1]
-                mel_frame = torch.nn.functional.pad(mel_frame, (0, pad_amt), value=-1.5) # Pad with silence value
-            # -------------------------------
 
             last_mel = mel_frame # Store for the final "flush" decode
             

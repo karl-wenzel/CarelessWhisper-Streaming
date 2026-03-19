@@ -318,7 +318,7 @@ class SpectrogramStream:
         self.audio_ctx = torch.tensor([])
         self.log_spec_max = -torch.inf
 
-    def calc_mel_with_new_frame(self, audio_frame: torch.Tensor, is_last: bool = False):
+    def calc_mel_with_new_frame(self, audio_frame: torch.Tensor, is_last: bool = False, expected_n_frames: int = None):
         
         self.window = self.window.to(audio_frame.device)
         
@@ -350,6 +350,18 @@ class SpectrogramStream:
         mel_spec = filters @ magnitudes
 
         log_spec = torch.clamp(mel_spec, min=1e-10).log10() # from shape (b, n_mels, audio_frames)
+
+        # --- FIX: Ensure expected_n_frames is met ---
+        if expected_n_frames is not None:
+            current_n_frames = log_spec.shape[-1]
+            if current_n_frames < expected_n_frames:
+                # Pad to the right with a small value (representing silence)
+                log_spec = F.pad(log_spec, (0, expected_n_frames - current_n_frames), value=-1.5)
+            elif current_n_frames > expected_n_frames:
+                # Trim if the is_last padding pushed it over
+                log_spec = log_spec[..., :expected_n_frames]
+        # --------------------------------------------
+
         self.log_spec_max = torch.maximum(log_spec.view(n_batch, -1).max(dim=-1).values, self.log_spec_max).to(log_spec.device)
         
         log_spec = torch.maximum(log_spec.view(n_batch, -1).permute(1, 0), self.log_spec_max - 8.0).permute(1, 0).view(n_batch, self.n_mels, -1)
