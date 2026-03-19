@@ -127,7 +127,7 @@ def transcribe(
             mel_frame = streamed_spectrogram.calc_mel_with_new_frame(
                 frame_tensor.to(model.device, non_blocking=True), 
                 is_last=is_last,
-                expected_n_frames=model.encoder.gran
+                expected_n_frames=(model.encoder.gran * 2) if is_last else None
             )
 
             last_mel = mel_frame # Store for the final "flush" decode
