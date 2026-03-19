@@ -351,18 +351,18 @@ class SpectrogramStream:
 
         log_spec = torch.clamp(mel_spec, min=1e-10).log10() # from shape (b, n_mels, audio_frames)
 
-        # --- FIX: Ensure expected_n_frames is met ---
+        # --- FIX: Match expected width for the Encoder ---
         if expected_n_frames is not None:
             current_n_frames = log_spec.shape[-1]
             if current_n_frames < expected_n_frames:
-                # Pad to the right with a small value (representing silence)
                 log_spec = F.pad(log_spec, (0, expected_n_frames - current_n_frames), value=-1.5)
             elif current_n_frames > expected_n_frames:
-                # Trim if the is_last padding pushed it over
                 log_spec = log_spec[..., :expected_n_frames]
-        # --------------------------------------------
 
-        self.log_spec_max = torch.maximum(log_spec.view(n_batch, -1).max(dim=-1).values, self.log_spec_max).to(log_spec.device)
+        # --- FIX: Use .reshape() instead of .view() to avoid Contiguity errors ---
+        # Also ensure we handle the max values across the batch correctly
+        current_max = log_spec.reshape(n_batch, -1).max(dim=-1).values
+        self.log_spec_max = torch.maximum(current_max, self.log_spec_max).to(log_spec.device)
         
         log_spec = torch.maximum(log_spec.view(n_batch, -1).permute(1, 0), self.log_spec_max - 8.0).permute(1, 0).view(n_batch, self.n_mels, -1)
         log_spec = (log_spec + 4.0) / 4.0
