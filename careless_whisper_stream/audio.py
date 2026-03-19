@@ -364,7 +364,7 @@ class SpectrogramStream:
         current_max = log_spec.reshape(n_batch, -1).max(dim=-1).values
         self.log_spec_max = torch.maximum(current_max, self.log_spec_max).to(log_spec.device)
         
-        log_spec = torch.maximum(log_spec.view(n_batch, -1).permute(1, 0), self.log_spec_max - 8.0).permute(1, 0).view(n_batch, self.n_mels, -1)
+        log_spec = torch.maximum(log_spec, (self.log_spec_max - 8.0).reshape(n_batch, 1, 1))
         log_spec = (log_spec + 4.0) / 4.0
         return log_spec
 
