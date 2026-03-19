@@ -64,7 +64,8 @@ def transcribe(
                                simulate_stream=simulate_stream, 
                                wav_file=wav_file, 
                                use_latency=use_latency, 
-                               pad_trim=pad_trim,)
+                               pad_trim=pad_trim,
+                               verbose=verbose)
     
     stream_instance.open_stream()
     

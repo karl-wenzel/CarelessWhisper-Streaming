@@ -41,7 +41,8 @@ class MyStream:
                  relay: bool = False,
                  use_latency: bool = False,
                  pad_trim: bool = True,
-                 use_remote_machine: bool = False):
+                 use_remote_machine: bool = False,
+                 verbose: bool = True):
 
         assert ms_gran % 20 == 0, "ms_gran must be a multiple of 20"
 
@@ -63,12 +64,17 @@ class MyStream:
         self.simulate_stream = simulate_stream
         if self.simulate_stream:
             assert wav_file is not None, "when simulating stream a wav file must be provided."
+            audio = load_audio(wav_file, sample_rate)
+
+            padding_samples = 8000 #value before was 180
+
             if pad_trim:
-                self.wav_array = pad_or_trim(load_audio(wav_file, sample_rate), length=N_SAMPLES+180) # wav array
+                self.wav_array = pad_or_trim(audio, length=N_SAMPLES+padding_samples) # wav array
             else:
-                audio = load_audio(wav_file, sample_rate)
-                self.wav_array = pad_or_trim(audio, length=audio.shape[-1]+180)
-                print(f"{self.wav_array.shape=}")
+                self.wav_array = pad_or_trim(audio, length=audio.shape[-1]+padding_samples)
+
+                if (verbose):
+                    print(f"{self.wav_array.shape=}")
     
     def _simulate_stream_using_wav(self):
         print("Streaming simulation of a wav started...")
