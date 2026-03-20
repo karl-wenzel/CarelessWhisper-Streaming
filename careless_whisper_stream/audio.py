@@ -67,7 +67,7 @@ class MyStream:
             assert wav_file is not None, "when simulating stream a wav file must be provided."
             audio = load_audio(wav_file, sample_rate)
 
-            padding_samples = 8000 #value before was 180
+            padding_samples = 180
 
             if pad_trim:
                 self.wav_array = pad_or_trim(audio, length=N_SAMPLES+padding_samples) # wav array
