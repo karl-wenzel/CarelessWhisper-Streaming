@@ -84,7 +84,7 @@ def evaluate():
         results = transcribe(
             model=model,
             wav_file=wav_path,
-            simulate_stream=True,
+            simulate_stream=False,
             language="en" if not args.multilingual else "auto",
             beam_size=5,
             temperature=0,
