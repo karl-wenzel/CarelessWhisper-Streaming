@@ -90,6 +90,7 @@ def transcribe(
         use_ca_kv_cache=ca_kv_cache,
         streaming_timestamps=streaming_timestamps,
         force_first_tokens_timestamps=force_first_tokens_timestamps,
+        verbose=verbose,
         **kwargs
     )
 

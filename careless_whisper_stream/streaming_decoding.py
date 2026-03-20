@@ -76,6 +76,8 @@ class DecodingOptions:
     wait_for_all: bool = False
     force_first_tokens_timestamps: bool = False
 
+    verbose: bool = True
+
 
 @dataclass(frozen=False)
 class DecodingResult:
@@ -1091,7 +1093,8 @@ class DecodingTask:
             self._reset_after_maximal_context(mel_frame)
         
         if self.mel.shape[-1] < (self.options.gran * 2 * (self.options.look_ahead_blocks + 1)):
-            print("Decoding Task: skipping first frames...")
+            if (self.options.verbose):
+                print("Decoding Task: skipping first frames...")
             return self._empty_results()
         
         # call the main sampling loop

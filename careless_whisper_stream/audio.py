@@ -60,6 +60,7 @@ class MyStream:
         self.chunk_size = int(rate_fraction * sample_rate)
         self.filename = filename
         self.streamed_wav_file = wav_file
+        self.verbose = verbose
 
         self.simulate_stream = simulate_stream
         if self.simulate_stream:
@@ -73,11 +74,12 @@ class MyStream:
             else:
                 self.wav_array = pad_or_trim(audio, length=audio.shape[-1]+padding_samples)
 
-                if (verbose):
+                if (self.verbose):
                     print(f"{self.wav_array.shape=}")
     
     def _simulate_stream_using_wav(self):
-        print("Streaming simulation of a wav started...")
+        if (self.verbose):
+            ("Streaming simulation of a wav started...")
 
         for i in range(self.wav_array.shape[-1] // self.chunk_size):
             if i == 0:
@@ -97,7 +99,8 @@ class MyStream:
         self.stream = self.audio.open(input=True, format=self.inp_dtype, channels=self.channels, rate=self.sample_rate, frames_per_buffer=self.chunk_size)
     
     def _read_from_stream(self):
-        print("Streaming instance recording started...")
+        if (self.verbose):
+            print("Streaming instance recording started...")
         
         while True:
             yield self.stream.read(self.chunk_size)
@@ -140,7 +143,8 @@ class MyStream:
         return self._read_from_stream()
 
     def _save_recording_file(self, frames: list):
-        print(f"Saving recorded audio file on path {self.filename}")
+        if (self.verbose):
+            print(f"Saving recorded audio file on path {self.filename}")
         
         waveFile = wave.open(self.filename, 'wb')
         waveFile.setnchannels(self.channels)
@@ -157,7 +161,8 @@ class MyStream:
         self.stream.close()
         self.audio.terminate()
         
-        print("Finished recording, stream and audio terminated.")
+        if (self.verbose):
+            print("Finished recording, stream and audio terminated.")
 
         if self.filename: self._save_recording_file(frames)
 
