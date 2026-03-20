@@ -34,6 +34,7 @@ def evaluate():
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--local_model_path", type=str, default=None, help="Path to local .pt file")
     parser.add_argument("--dataset_fraction", type=float, default=1.0, help="Fraction of the dataset, that will be used. 1.0 (100%) by default.")
+    parser.add_argument("--dataset_partition", type=str, default="test", help="The partition of the dataset that will be used for evaluation. 'Test' by default.")
     parser.add_argument("-flush_last_frame", action="store_true", help="Calculates last frame with final spectogram and streaming mode off")
     parser.add_argument("-pad_last_frame", action="store_true", help="Pads the last frame")
     parser.add_argument("-verbose", action="store_true", help="Prints additional info while evaluating")
@@ -58,7 +59,7 @@ def evaluate():
     if args.dataset_name not in ds_paths:
         raise ValueError(f"Dataset {args.dataset_name} not found in ds_dict.py")
     
-    csv_path = ds_paths[args.dataset_name]['test']
+    csv_path = ds_paths[args.dataset_name][str(args.dataset_partition)]
     print(f"Loading test split from: {csv_path}")
     df = pd.read_csv(csv_path)
 
