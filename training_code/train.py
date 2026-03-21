@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import torch
+import json
 from pathlib import Path
 from ds_dict import ds_paths
 from whisper_module import LoRAStreamedWhisper
@@ -29,6 +30,12 @@ def train_model(log_output_dir, check_output_dir, model_name, train_set, val_set
 
     Path(log_output_dir).mkdir(exist_ok=True)
     Path(check_output_dir).mkdir(exist_ok=True)
+
+    # --- Save Configuration to JSON ---
+    config_path = Path(check_output_dir) / "cfg.json"
+    with open(config_path, "w") as f:
+        json.dump(vars(cfg), f, indent=4)
+    # ----------------------------------
 
     wandblogger = WandbLogger(
         save_dir=log_output_dir,
@@ -122,9 +129,9 @@ if __name__ == "__main__":
     lr_addition = f"_LR-{cfg.learning_rate}"
     effective_bsize = cfg.batch_size * cfg.gradient_accumulation_steps
     
-    if cfg.lora and cfg.streaming_train:
-        dir_name = f"LoRA_streamed_whisper_{cfg.size}_{cfg.dataset}_{effective_bsize}_{cfg.name}{lr_addition}_r{cfg.rank}_g{cfg.gran}_eg{cfg.extra_gran_blocks}_top{cfg.top_k}_full-stream{cfg.streaming_train}_random-order{cfg.streaming_random}_fraction{cfg.streaming_fraction}"
-        project_name = "lora"
+    #if cfg.lora and cfg.streaming_train: Why is this here? we always need the variables below... uncommented for now
+    dir_name = cfg.name
+    project_name = "lora" if (cfg.lora and cfg.streaming_train) else None
     
     # Run trainer
     train_model(
