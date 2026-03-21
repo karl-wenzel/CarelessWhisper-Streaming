@@ -1,5 +1,6 @@
 import argparse
 import os
+import time
 import pandas as pd
 import torch
 import jiwer
@@ -10,19 +11,38 @@ from careless_whisper_stream import load_streaming_model
 from careless_whisper_stream.streaming_transcribe import transcribe
 from training_code.ds_dict import ds_paths
 
-def extract_text_from_tg(tg_path):
-    """Reconstructs the transcript from a TextGrid using praatio."""
+def extract_words_and_times_from_tg(tg_path):
+    """Reconstructs the transcript and timestamps from a TextGrid using praatio."""
     try:
-        # Match the implementation in AlignedTextGridDataset
         tg = textgrid.openTextgrid(tg_path, includeEmptyIntervals=False)
         text_intervals = tg.getTier("words")
         
-        # praatio intervals have a .label attribute
-        words = [interval.label for interval in text_intervals if interval.label.strip()]
-        return " ".join(words)
+        # Return a list of dictionaries with word, start, and end times
+        words = [
+            {"word": interval.label.strip(), "start": interval.start, "end": interval.end} 
+            for interval in text_intervals if interval.label.strip()
+        ]
+        return words
     except Exception as e:
         print(f"Error parsing TextGrid {tg_path}: {e}")
-        return ""
+        return []
+
+def get_gt_prefix_at_time(gt_words, current_time):
+    """Returns the ground truth string spoken up to 'current_time'."""
+    # We include words whose start time has passed. 
+    return " ".join([w["word"] for w in gt_words if w["start"] <= current_time])
+
+def calculate_idsc(ref, hyp):
+    """Calculates Insertions, Deletions, Substitutions, and Correct hits."""
+    if not ref and not hyp:
+        return 0, 0, 0, 0
+    if not ref:
+        return len(hyp.split()), 0, 0, 0
+    if not hyp:
+        return 0, len(ref.split()), 0, 0
+    
+    out = jiwer.process_words(ref, hyp)
+    return out.insertions, out.deletions, out.substitutions, out.hits
 
 def evaluate():
     parser = argparse.ArgumentParser(description="Evaluate CarelessWhisper WER on a dataset")
@@ -35,6 +55,7 @@ def evaluate():
     parser.add_argument("--local_model_path", type=str, default=None, help="Path to local .pt file")
     parser.add_argument("--dataset_fraction", type=float, default=1.0, help="Fraction of the dataset, that will be used. 1.0 (100%) by default.")
     parser.add_argument("--dataset_partition", type=str, default="test", help="The partition of the dataset that will be used for evaluation. 'Test' by default.")
+    parser.add_argument("--beam_size", type=int, default=5, help="Beam size during inference.")
     parser.add_argument("-flush_last_frame", action="store_true", help="Calculates last frame with final spectogram and streaming mode off")
     parser.add_argument("-pad_last_frame", action="store_true", help="Pads the last frame")
     parser.add_argument("-verbose", action="store_true", help="Prints additional info while evaluating")
@@ -69,6 +90,8 @@ def evaluate():
     elif args.dataset_fraction <= 0 or args.dataset_fraction > 1.0:
         print(f"Warning: dataset_fraction {args.dataset_fraction} is out of bounds. Using full dataset.")
 
+    global_rwer_num, global_rwer_den = 0, 0
+    global_arwer_num, global_arwer_den = 0, 0
     predictions = []
     references = []
 
@@ -77,40 +100,64 @@ def evaluate():
     for _, row in tqdm(df.iterrows(), total=len(df)):
         wav_path = row['wav_path']
         tg_path = row['tg_path']
-        reference_text = extract_text_from_tg(tg_path)
         
-        # Use the transcribe logic from streaming_transcribe.py 
-        # setting simulate_stream=True to handle the file as a stream
+        gt_words = extract_words_and_times_from_tg(tg_path)
+        reference_text = " ".join([w["word"] for w in gt_words]).strip().lower()
+        
+        # chunk duration in seconds for time tracking
+        chunk_duration_sec = args.chunk_size / 1000.0 
+        
+        # If transcribe() doesn't currently log processing time per chunk, 
+        # ARWER will fall back to acting like RWER. 
+        # For a true ARWER, you need to track `time.time()` inside your streaming loop!
+        start_process_time = time.time()
+        
         results = transcribe(
             model=model,
             wav_file=wav_path,
             simulate_stream=True,
             language="en" if not args.multilingual else "auto",
-            beam_size=5,
+            beam_size=args.beam_size,
             temperature=0,
             flush_last_frame=args.flush_last_frame,
             pad_last_frame=args.pad_last_frame,
             verbose=False
         )
         
-        # transcribe returns a list of result objects for each chunk
-        # We take the text from the final result in the stream
-        if results:
-            predicted_text = results[-1].text
-        else:
-            predicted_text = ""
+        # RWER / ARWER Calculation per sample
+        for step, res in enumerate(results):
+            hyp_text = res.text.strip().lower()
+            
+            # --- RWER  ---
+            # Time of the audio chunk itself (rho)
+            audio_time_rho = (step + 1) * chunk_duration_sec 
+            gt_text_rho = get_gt_prefix_at_time(gt_words, audio_time_rho).lower()
+            
+            i, d, s, c = calculate_idsc(gt_text_rho, hyp_text)
+            global_rwer_num += (i + d + s)
+            global_rwer_den += (c + d + s) # This equals total words in gt_text_rho
 
-        pred = predicted_text.strip().lower()
-        ref = reference_text.strip().lower()
+            # --- ARWER ---
+            # Real-time expected transcript (tau = audio_time + hardware_processing_latency)
+            # *Note: need to modify transcribe() to return processing latency per chunk 
+            # to make this completely accurate. For now we mock a 0.1s latency.*
+            mock_processing_latency = 0.1 
+            real_time_tau = audio_time_rho + mock_processing_latency
+            gt_text_tau = get_gt_prefix_at_time(gt_words, real_time_tau).lower()
+            
+            i_a, d_a, s_a, c_a = calculate_idsc(gt_text_tau, hyp_text)
+            global_arwer_num += (i_a + d_a + s_a)
+            global_arwer_den += (c_a + d_a + s_a)
 
-        predictions.append(pred)
-        references.append(ref)
+        # Final transcript for standard WER
+        predicted_text = results[-1].text if results else ""
+        predictions.append(predicted_text.strip().lower())
+        references.append(reference_text)
 
-        if (args.verbose):
-            print("Pred: " + pred)
-            print("Label:" + ref)
-            print(f"WER: {jiwer.wer(ref, pred):.2%}")
-            print("-"*30)
+        if args.verbose:
+            print("Pred: " + predicted_text)
+            print("Label:" + reference_text)
+            print("-" * 30)
 
     # 4. Metric Calculation
     wer = jiwer.wer(references, predictions)
