@@ -1,11 +1,13 @@
 import argparse
 import os
 import time
+import json
 import pandas as pd
 import torch
 import jiwer
 from tqdm import tqdm
 from praatio import textgrid
+from pathlib import Path
 import librosa
 import numpy as np
 
@@ -167,6 +169,29 @@ def evaluate():
     avg_latency = np.mean(all_chunk_latencies) if all_chunk_latencies else 0
     rtf = total_processing_time_sec / total_audio_duration_sec if total_audio_duration_sec > 0 else 0
     
+    # --- Prepare Stats Dictionary ---
+    stats = {
+        "dataset": args.dataset_name,
+        "partition": args.dataset_partition,
+        "fraction": args.dataset_fraction,
+        "wer": float(wer),
+        "rwer": float(rwer),
+        "arwer": float(arwer),
+        "avg_latency_ms": float(avg_latency * 1000),
+        "rtf": float(rtf),
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+    }
+
+    # --- Save JSON if using local model ---
+    if args.local_model_path:
+        # Get the directory where the .pt file is located
+        model_dir = Path(args.local_model_path).parent
+        save_path = model_dir / "evaluation.json"
+        
+        with open(save_path, "w") as f:
+            json.dump(stats, f, indent=4)
+        print(f"Stats saved to: {save_path}")
+
     print("\n" + "="*30)
     print(f"RESULTS FOR: {args.dataset_name}")
     print(f"WER:           {wer * 100:.2f}%")
