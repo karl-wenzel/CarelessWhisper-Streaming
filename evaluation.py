@@ -6,6 +6,8 @@ import torch
 import jiwer
 from tqdm import tqdm
 from praatio import textgrid
+import librosa
+import numpy as np
 
 from careless_whisper_stream import load_streaming_model
 from careless_whisper_stream.streaming_transcribe import transcribe
@@ -92,25 +94,23 @@ def evaluate():
 
     global_rwer_num, global_rwer_den = 0, 0
     global_arwer_num, global_arwer_den = 0, 0
-    predictions = []
-    references = []
+    all_chunk_latencies = []
+    total_audio_duration_sec = 0.0
+    total_processing_time_sec = 0.0
+    predictions, references = [], []
 
     # 3. Inference Loop
     print(f"Starting evaluation on {len(df)} samples...")
     for _, row in tqdm(df.iterrows(), total=len(df)):
         wav_path = row['wav_path']
         tg_path = row['tg_path']
+
+        audio_duration = librosa.get_duration(path=wav_path)
+        total_audio_duration_sec += audio_duration
         
         gt_words = extract_words_and_times_from_tg(tg_path)
         reference_text = " ".join([w["word"] for w in gt_words]).strip().lower()
-        
-        # chunk duration in seconds for time tracking
         chunk_duration_sec = args.chunk_size / 1000.0 
-        
-        # If transcribe() doesn't currently log processing time per chunk, 
-        # ARWER will fall back to acting like RWER. 
-        # For a true ARWER, you need to track `time.time()` inside your streaming loop!
-        start_process_time = time.time()
         
         results = transcribe(
             model=model,
@@ -128,21 +128,20 @@ def evaluate():
         for step, res in enumerate(results):
             hyp_text = res.text.strip().lower()
             
-            # --- RWER  ---
-            # Time of the audio chunk itself (rho)
+            # --- Latency Tracking ---
+            p_latency = getattr(res, 'processing_time', 0.0)
+            all_chunk_latencies.append(p_latency)
+            total_processing_time_sec += p_latency
+
+            # --- RWER/ARWER logic ---
             audio_time_rho = (step + 1) * chunk_duration_sec 
             gt_text_rho = get_gt_prefix_at_time(gt_words, audio_time_rho).lower()
             
             i, d, s, c = calculate_idsc(gt_text_rho, hyp_text)
             global_rwer_num += (i + d + s)
-            global_rwer_den += (c + d + s) # This equals total words in gt_text_rho
+            global_rwer_den += (c + d + s)
 
-            # --- ARWER ---
-            # Real-time expected transcript (tau = audio_time + hardware_processing_latency)
-            # *Note: need to modify transcribe() to return processing latency per chunk 
-            # to make this completely accurate. For now we mock a 0.1s latency.*
-            mock_processing_latency = 0.1 
-            real_time_tau = audio_time_rho + mock_processing_latency
+            real_time_tau = audio_time_rho + p_latency
             gt_text_tau = get_gt_prefix_at_time(gt_words, real_time_tau).lower()
             
             i_a, d_a, s_a, c_a = calculate_idsc(gt_text_tau, hyp_text)
@@ -159,16 +158,23 @@ def evaluate():
             print("Label:" + reference_text)
             print("-" * 30)
 
-    # 4. Metric Calculation
-    wer = jiwer.wer(references, predictions)
-    rwer = global_rwer_num / global_rwer_den
-    arwer = global_arwer_num / global_arwer_den
+    # 4. Final Aggregated Metric Calculation
+    wer = jiwer.wer(references, predictions) if references else 0
+    rwer = global_rwer_num / global_rwer_den if global_rwer_den > 0 else 0
+    arwer = global_arwer_num / global_arwer_den if global_arwer_den > 0 else 0
+    
+    # Latency & RTF
+    avg_latency = np.mean(all_chunk_latencies) if all_chunk_latencies else 0
+    rtf = total_processing_time_sec / total_audio_duration_sec if total_audio_duration_sec > 0 else 0
     
     print("\n" + "="*30)
     print(f"RESULTS FOR: {args.dataset_name}")
-    print(f"WER: {wer * 100:.2f}%")
-    print(f"RWER: {rwer * 100:.2f}%")
-    print(f"ARWER: {arwer * 100:.2f}%")
+    print(f"WER:           {wer * 100:.2f}%")
+    print(f"RWER:          {rwer * 100:.2f}%")
+    print(f"ARWER:         {arwer * 100:.2f}%")
+    print("-" * 20)
+    print(f"Avg Latency:   {avg_latency * 1000:.1f} ms")
+    print(f"RTF:           {rtf:.4f}")
     print("="*30)
 
 if __name__ == "__main__":

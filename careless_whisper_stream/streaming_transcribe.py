@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, List
 
 import numpy as np
 import torch
+import time
 
 from .audio import (
     SAMPLE_RATE,
@@ -17,6 +18,17 @@ from .streaming_decoding import DecodingOptions
 if TYPE_CHECKING:
     from .streaming_model import StreamingWhisper
 
+class ChunkResultWrapper:
+    """
+    Wraps the decode result to attach processing latency 
+    without breaking existing attribute access
+    """
+    def __init__(self, original_result, processing_time: float):
+        self._original = original_result
+        self.processing_time = processing_time
+        
+    def __getattr__(self, item):
+        return getattr(self._original, item)
         
 def transcribe(
     model: "StreamingWhisper" = None,
@@ -53,7 +65,8 @@ def transcribe(
 
     Returns - 
     -------
-    A dict with a text, tokens field with all of the text that was transcribed till the stream stopped.
+    A list of ChunkResultWrapper objects containing the text, tokens, 
+    and the processing_time field.
     """
     model.reset(use_stream=True) # we first reset the model before starting a stream, cleaning any cache.
     model.eval()
@@ -125,6 +138,8 @@ def transcribe(
                 streamed_spectrogram.reset()
 
             frame_tensor = torch.from_numpy(frame).pin_memory()
+
+            chunk_start_time = time.perf_counter()
             
             # 1. Pass is_last to ensure STFT pads the end of the audio correctly
             mel_frame = streamed_spectrogram.calc_mel_with_new_frame(
@@ -138,10 +153,14 @@ def transcribe(
             # decode given the new mel frame and print results
             result = model.decode(mel_frame.squeeze(0), decoding_options)
             
+            chunk_end_time = time.perf_counter()
+            processing_latency = chunk_end_time - chunk_start_time
+            wrapped_result = ChunkResultWrapper(result, processing_latency)
+
             if (verbose):
-                print(result.text)
+                print(f"{wrapped_result.text} (Latency: {processing_latency:.3f}s)")
             
-            texts.append(result)
+            texts.append(wrapped_result)
 
             if is_last:
                 break
@@ -155,8 +174,15 @@ def transcribe(
                 decoding_options.stream_decode = False 
                 if last_mel is not None:
                     # Use the mel generated in the last loop iteration
+                    flush_start_time = time.perf_counter()
+                    
                     result = model.decode(last_mel.squeeze(0), decoding_options)
-                    texts.append(result)
+                    
+                    flush_end_time = time.perf_counter()
+                    flush_latency = flush_end_time - flush_start_time
+                    
+                    wrapped_result = ChunkResultWrapper(result, flush_latency)
+                    texts.append(wrapped_result)
 
     except KeyboardInterrupt:
         stream_instance.close_stream(frames)
