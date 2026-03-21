@@ -185,7 +185,7 @@ def evaluate():
     # --- Save JSON if using local model ---
     if args.local_model_path:
         # Get the directory where the .pt file is located
-        model_dir = Path(args.local_model_path).parent
+        model_dir = Path(args.local_model_path).parent.parent
         save_path = model_dir / "evaluation.json"
         
         with open(save_path, "w") as f:
