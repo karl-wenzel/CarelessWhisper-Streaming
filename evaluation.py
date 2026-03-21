@@ -161,10 +161,14 @@ def evaluate():
 
     # 4. Metric Calculation
     wer = jiwer.wer(references, predictions)
+    rwer = global_rwer_num / global_rwer_den
+    arwer = global_arwer_num / global_arwer_den
     
     print("\n" + "="*30)
     print(f"RESULTS FOR: {args.dataset_name}")
     print(f"WER: {wer * 100:.2f}%")
+    print(f"RWER: {rwer * 100:.2f}%")
+    print(f"ARWER: {arwer * 100:.2f}%")
     print("="*30)
 
 if __name__ == "__main__":
