@@ -23,6 +23,7 @@ class WhisperCustomModel(LightningModule):
             self.task = task
             self.lang = lang
             self.model = careless_whisper_stream.load_model(model_name)
+            self.model.gradient_checkpointing_enable()
             self.tokenizer: whisper_tokenizer = whisper_tokenizer.get_tokenizer(True, language=lang)
 
             self.loss_fn = nn.CrossEntropyLoss(ignore_index=-100)

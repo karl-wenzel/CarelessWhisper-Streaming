@@ -64,7 +64,6 @@ def train_model(log_output_dir, check_output_dir, model_name, train_set, val_set
     # Model mux
     if cfg.lora and cfg.streaming_train:
         model = LoRAStreamedWhisper(cfg, model_name, cfg.lang, train_set, val_set, rank=cfg.rank, enc_emb_gran=cfg.gran, enc_context=cfg.extra_gran_blocks, sim_stream=cfg.sim_stream)
-        model.model.gradient_checkpointing_enable()
     
     trainer = Trainer(
         accelerator=DEVICE,
