@@ -64,6 +64,7 @@ def train_model(log_output_dir, check_output_dir, model_name, train_set, val_set
     # Model mux
     if cfg.lora and cfg.streaming_train:
         model = LoRAStreamedWhisper(cfg, model_name, cfg.lang, train_set, val_set, rank=cfg.rank, enc_emb_gran=cfg.gran, enc_context=cfg.extra_gran_blocks, sim_stream=cfg.sim_stream)
+        model.model.gradient_checkpointing_enable()
     
     trainer = Trainer(
         accelerator=DEVICE,
@@ -74,8 +75,8 @@ def train_model(log_output_dir, check_output_dir, model_name, train_set, val_set
         num_sanity_val_steps=1,
         strategy=cfg.strategy,
         fast_dev_run=cfg.fast_dev_run,
-        precision="bf16-mixed"
-        # accumulate_grad_batches=cfg.gradient_accumulation_steps,
+        precision=cfg.precision,
+        accumulate_grad_batches=cfg.gradient_accumulation_steps,
     )
 
     if cfg.ckpt is None: trainer.fit(model)
@@ -119,7 +120,8 @@ if __name__ == "__main__":
         streaming_fraction=args.streaming_fraction,
         seed=SEED,
         multilingual=args.multilingual,
-        custom_len=args.custom_len
+        custom_len=args.custom_len,
+        precision=args.precision
     )
 
     if cfg.streaming_train:

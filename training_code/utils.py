@@ -58,6 +58,7 @@ def parse_cmdl():
     parser.add_argument('--top_k', type=int, help="Top K checkpoints to save, use 1 for the best, -1 for last", default=1)
     parser.add_argument('--early_stop', action="store_true", help="Use early stopping callback")
     parser.add_argument('--custom_len', type=int, help="Number of samples to train on", default=0)
+    parser.add_argument('--precision', type=str, help="Which precision to use for training", default="16")
     
     # DL Hyper Parameters
     parser.add_argument('--epochs', type=int, help="Number of training epochs", default=10)
