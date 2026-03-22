@@ -24,6 +24,7 @@ class Config:
     strategy: str = "ddp"
     seed: int = 3407
     custom_len: int = 0
+    precision: str = "16"
 
     # Whisper args
     lang: str = "en"
