@@ -74,7 +74,7 @@ def train_model(log_output_dir, check_output_dir, model_name, train_set, val_set
         num_sanity_val_steps=1,
         strategy=cfg.strategy,
         fast_dev_run=cfg.fast_dev_run,
-        # precision="16"
+        precision="bf16-mixed"
         # accumulate_grad_batches=cfg.gradient_accumulation_steps,
     )
 
