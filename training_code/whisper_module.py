@@ -249,7 +249,7 @@ class LoRAStreamedWhisper(WhisperCustomModel):
 
         return sorted(sample_points)
 
-    def _forward_step_stream(self, batch, step):
+    def _forward_step_stream(self, batch, batch_id, step):
         input_ids = batch["input_ids"]
         labels = batch["labels"].long()
         dec_input_ids = batch["dec_input_ids"].long()
@@ -264,11 +264,28 @@ class LoRAStreamedWhisper(WhisperCustomModel):
             audio_features = self.model.encoder(input_ids[..., :(i + 1) * (self.enc_emb_gran * 2)], index=[0, (i + 1) * self.enc_emb_gran], mask=True)
             out = self.model.decoder(dec_input_ids, audio_features, dump_type="None")
 
+            if batch_id == 0 and self.current_epoch == 0:
+                logits = out[0]
+                pred_ids = logits.argmax(dim=-1).detach().cpu().tolist()
+
+                try:
+                    pred_text = self.tokenizer.decode(pred_ids)
+                    print("PREDICTION:", pred_text)
+                except:
+                    pass
+
             if step == "train":
                 optimizer.zero_grad()
 
             # loss calc
             frame_labels = self._calc_labels(labels, endpoints, i)
+
+            if batch_id == 0 and self.current_epoch == 0:
+                try:
+                    print("CALC LABELS:", frame_labels.view(-1))
+                except:
+                    pass
+
             loss = self.loss_fn(out.view(-1, out.size(-1)), frame_labels.view(-1))
 
             # optimizer step if relevant.
@@ -301,8 +318,26 @@ class LoRAStreamedWhisper(WhisperCustomModel):
     def training_step(self, batch, batch_id):
         print("trainstep 0")
 
+        if batch_id == 0 and self.current_epoch == 0:
+            print("\n=== FIRST TRAIN BATCH ===")
+            for k, v in batch.items():
+                if hasattr(v, "shape"):
+                    print(f"{k}: shape={v.shape}")
+                else:
+                    print(f"{k}: {v}")
+            labels_sample = batch["labels"][0]
+            # remove ignore_index if present
+            labels_sample = labels_sample[labels_sample != -100]
+
+            try:
+                labels_sample = labels_sample.detach().cpu().tolist()
+                decoded = self.tokenizer.decode(labels_sample)
+                print("DECODED LABEL:", decoded)
+            except:
+                print("Could not decode labels")
+
         if self.full_stream:
-            loss = self._forward_step_stream(batch, "train")
+            loss = self._forward_step_stream(batch, batch_id, "train")
         else:
             loss = self._forward_step(batch, "train")
 
