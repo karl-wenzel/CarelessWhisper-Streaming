@@ -195,19 +195,22 @@ class LoRAStreamedWhisper(WhisperCustomModel):
         self.__train_dataset = train_dataset
         self.__eval_dataset = eval_dataset
 
-    def _calc_labels(self, labels: Tensor, endpoints: Tensor, index: int):
+    def _calc_labels(self, labels, endpoints, index):
         t_seconds = (index + 1) * self.enc_emb_gran * 0.02
-        
-        # take only relevant labels into account
+
         mask = (endpoints <= t_seconds) & (endpoints != -100)
-        eot_indices = mask.int().argmin(dim=-1)
         clone_labels = labels.clone()
-        
-        # ignore irrelevant labels
+
+        # ignore future tokens
         clone_labels[~mask] = -100
-        
-        # mark eot labels
-        clone_labels[range(labels.shape[0]), eot_indices] = self.tokenizer.eot 
+
+        batch_size, seq_len = labels.shape
+        for b in range(batch_size):
+            false_positions = (~mask[b]).nonzero(as_tuple=False)
+            if len(false_positions) > 0:
+                first_future = false_positions[0].item()
+                clone_labels[b, first_future] = self.tokenizer.eot
+
         return clone_labels
 
     def _get_sample_points(self, endpoints: Tensor):
