@@ -77,7 +77,9 @@ class WhisperCustomModel(LightningModule):
         wer = self.calc_wer_val(out, labels)
 
         self.log("val/loss", loss, on_step=True, prog_bar=True, logger=True, on_epoch=True)
-        self.log("val/wer", wer, on_step=True, prog_bar=True, logger=True, on_epoch=True)
+        self.log("val/wer", wer, on_step=False, prog_bar=True, logger=True, on_epoch=True)
+        self.log("val/wer_step", wer, on_step=True, prog_bar=True, logger=True, on_epoch=False)
+
 
         return {
             "wer": wer,
