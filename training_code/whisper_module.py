@@ -56,27 +56,6 @@ class WhisperCustomModel(LightningModule):
         labels = batch["labels"].long()
         dec_input_ids = batch["dec_input_ids"].long()
 
-        print("trainstep 1")
-        if batch_id == 0 and self.current_epoch == 0:
-            print("\n=== FIRST TRAIN BATCH ===")
-            for k, v in batch.items():
-                if hasattr(v, "shape"):
-                    print(f"{k}: shape={v.shape}")
-                else:
-                    print(f"{k}: {v}")
-            labels_sample = batch["labels"][0]
-            # remove ignore_index if present
-            labels_sample = labels_sample[labels_sample != -100]
-
-            try:
-                labels_sample = labels_sample.detach().cpu().tolist()
-                decoded = self.tokenizer.decode(labels_sample)
-                print("DECODED LABEL:", decoded)
-            except:
-                print("Could not decode labels")
-            
-            
-
         with torch.no_grad():
             audio_features = self.model.encoder(input_ids)
 
@@ -255,48 +234,30 @@ class LoRAStreamedWhisper(WhisperCustomModel):
         dec_input_ids = batch["dec_input_ids"].long()
         endpoints = batch["endpoints"]
 
-        if step == "train":
-            optimizer = self.optimizers()
-
-        # forward
+        total_loss = 0.0
         sample_points = self._get_sample_points(endpoints)
+
         for i in sample_points:
-            audio_features = self.model.encoder(input_ids[..., :(i + 1) * (self.enc_emb_gran * 2)], index=[0, (i + 1) * self.enc_emb_gran], mask=True)
+            audio_features = self.model.encoder(
+                input_ids[..., :(i + 1) * (self.enc_emb_gran * 2)],
+                index=[0, (i + 1) * self.enc_emb_gran],
+                mask=True
+            )
             out = self.model.decoder(dec_input_ids, audio_features, dump_type="None")
 
-            if batch_id == 0 and self.current_epoch == 0:
-                logits = out[0]
-                pred_ids = logits.argmax(dim=-1).detach().cpu().tolist()
-
-                try:
-                    pred_text = self.tokenizer.decode(pred_ids)
-                    print("PREDICTION:", pred_text)
-                except:
-                    pass
-
-            if step == "train":
-                optimizer.zero_grad()
-
-            # loss calc
             frame_labels = self._calc_labels(labels, endpoints, i)
-
-            if batch_id == 0 and self.current_epoch == 0:
-                try:
-                    print("CALC LABELS:", frame_labels.view(-1))
-                except:
-                    pass
-
             loss = self.loss_fn(out.view(-1, out.size(-1)), frame_labels.view(-1))
+            total_loss = total_loss + loss
 
-            # optimizer step if relevant.
-            if step == "train":
-                loss.backward()
-                optimizer.step() # might move optimizer step to out of the loop for faster training
+        total_loss = total_loss / len(sample_points)
 
         if step == "train":
-            return loss
-        
-        return out, loss
+            optimizer = self.optimizers()
+            optimizer.zero_grad()
+            self.manual_backward(total_loss)
+            optimizer.step()
+
+        return {"out": out, "loss": total_loss}
 
     def _forward_step(self, batch, step):
         input_ids = batch["input_ids"]
@@ -337,7 +298,8 @@ class LoRAStreamedWhisper(WhisperCustomModel):
                 print("Could not decode labels")
 
         if self.full_stream:
-            loss = self._forward_step_stream(batch, batch_id, "train")
+            result = self._forward_step_stream(batch, batch_id, "train")
+            loss = result["loss"]
         else:
             loss = self._forward_step(batch, "train")
 
