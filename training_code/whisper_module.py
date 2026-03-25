@@ -237,8 +237,15 @@ class LoRAStreamedWhisper(WhisperCustomModel):
         dec_input_ids = batch["dec_input_ids"].long()
         endpoints = batch["endpoints"]
 
-        total_loss = 0.0
         sample_points = self._get_sample_points(endpoints)
+
+        optimizer = None
+        if step == "train":
+            optimizer = self.optimizers()
+            optimizer.zero_grad()
+
+        total_loss = 0.0
+        last_out = None
 
         for i in sample_points:
             audio_features = self.model.encoder(
@@ -247,20 +254,21 @@ class LoRAStreamedWhisper(WhisperCustomModel):
                 mask=True
             )
             out = self.model.decoder(dec_input_ids, audio_features, dump_type="None")
+            last_out = out
 
             frame_labels = self._calc_labels(labels, endpoints, i)
             loss = self.loss_fn(out.view(-1, out.size(-1)), frame_labels.view(-1))
-            total_loss = total_loss + loss
 
-        total_loss = total_loss / len(sample_points)
+            scaled_loss = loss / len(sample_points)
+            total_loss += scaled_loss.detach()
+
+            if step == "train":
+                self.manual_backward(scaled_loss)
 
         if step == "train":
-            optimizer = self.optimizers()
-            optimizer.zero_grad()
-            self.manual_backward(total_loss)
             optimizer.step()
 
-        return {"out": out, "loss": total_loss}
+        return {"out": last_out, "loss": total_loss}
 
     def _forward_step(self, batch, step):
         input_ids = batch["input_ids"]
