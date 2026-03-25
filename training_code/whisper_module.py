@@ -56,10 +56,40 @@ class WhisperCustomModel(LightningModule):
         labels = batch["labels"].long()
         dec_input_ids = batch["dec_input_ids"].long()
 
+        if batch_id == 0 and self.current_epoch == 0:
+            print("\n=== FIRST TRAIN BATCH ===")
+            for k, v in batch.items():
+                if hasattr(v, "shape"):
+                    print(f"{k}: shape={v.shape}")
+                else:
+                    print(f"{k}: {v}")
+            labels_sample = batch["labels"][0]
+            # remove ignore_index if present
+            labels_sample = labels_sample[labels_sample != -100]
+
+            try:
+                labels_sample = labels_sample.detach().cpu().tolist()
+                decoded = self.tokenizer.decode(labels_sample)
+                print("DECODED LABEL:", decoded)
+            except:
+                print("Could not decode labels")
+            
+            
+
         with torch.no_grad():
             audio_features = self.model.encoder(input_ids)
 
         out, _, _ = self.model.decoder(dec_input_ids, audio_features)
+
+        if batch_id == 0 and self.current_epoch == 0:
+            logits = out[0]
+            pred_ids = logits.argmax(dim=-1).detach().cpu().tolist()
+
+            try:
+                pred_text = self.tokenizer.decode(pred_ids)
+                print("PREDICTION:", pred_text)
+            except:
+                pass
 
         loss = self.loss_fn(out.view(-1, out.size(-1)), labels.view(-1))
         self.log("train/loss", loss, on_step=True, prog_bar=True, logger=True)
