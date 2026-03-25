@@ -18,7 +18,15 @@ ds_paths = {
     'LIBRI-960-ALIGNED': {
         'train': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/train-960.csv",  # used on training steps.
         'val': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/dev.csv",  # used on validation steps.
-        'test': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/test.csv"  # used on evaluation.
+        'test': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/test.csv",  # used for evaluation.
+        'test-clean': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/test-clean.csv",  # used for evaluation on Libri-Clean.
+        'test-other': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/test-other.csv"  # used for evaluation on Libri-Other.
+
+    },
+    'LIBRI-100-CLEAN-ALIGNED': {
+        'train': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/train-clean-100.csv",  # used on training steps.
+        'val': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/dev-clean.csv",  # used on validation steps.
+        'test': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/test-clean.csv"  # used for evaluation.
     },
     # Add you entries below.
 }
