@@ -56,6 +56,7 @@ class WhisperCustomModel(LightningModule):
         labels = batch["labels"].long()
         dec_input_ids = batch["dec_input_ids"].long()
 
+        print("trainstep 1")
         if batch_id == 0 and self.current_epoch == 0:
             print("\n=== FIRST TRAIN BATCH ===")
             for k, v in batch.items():
@@ -298,6 +299,8 @@ class LoRAStreamedWhisper(WhisperCustomModel):
         return out, loss
 
     def training_step(self, batch, batch_id):
+        print("trainstep 0")
+
         if self.full_stream:
             loss = self._forward_step_stream(batch, "train")
         else:
