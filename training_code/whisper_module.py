@@ -280,8 +280,6 @@ class LoRAStreamedWhisper(WhisperCustomModel):
         return out, loss
 
     def training_step(self, batch, batch_id):
-        print("trainstep 0")
-
         if batch_id == 0 and self.current_epoch == 0:
             print("\n=== FIRST TRAIN BATCH ===")
             for k, v in batch.items():
