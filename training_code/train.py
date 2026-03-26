@@ -76,6 +76,8 @@ def train_model(log_output_dir, check_output_dir, model_name, train_set, val_set
         fast_dev_run=cfg.fast_dev_run,
         precision=cfg.precision,
         accumulate_grad_batches=cfg.gradient_accumulation_steps,
+        gradient_clip_val=1.0,
+        gradient_clip_algorithm="norm"
     )
 
     if cfg.ckpt is None: trainer.fit(model)
