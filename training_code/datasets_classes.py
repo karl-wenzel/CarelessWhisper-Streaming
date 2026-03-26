@@ -170,8 +170,8 @@ class TIMIT(torch.utils.data.Dataset):
         )
 
 class PrecomputedAlignedDataset(torch.utils.data.Dataset):
-    def __init__(self, manifest_csv: str, custom_len: int = 0):
-        self.df = pd.read_csv(manifest_csv)
+    def __init__(self, manifest_path: str, custom_len: int = 0):
+        self.df = pd.read_csv(manifest_path)
         self.custom_len = custom_len
 
         # Faster than repeated iloc on a full dataframe
