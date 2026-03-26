@@ -266,6 +266,7 @@ class LoRAStreamedWhisper(WhisperCustomModel):
                 self.manual_backward(scaled_loss)
 
         if step == "train":
+            torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
             optimizer.step()
 
         return {"out": last_out, "loss": total_loss}
