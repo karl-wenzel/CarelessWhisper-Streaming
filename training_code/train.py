@@ -78,6 +78,8 @@ def train_model(log_output_dir, check_output_dir, model_name, train_set, val_set
         accumulate_grad_batches=cfg.gradient_accumulation_steps
     )
 
+    print("num_training_batches:", trainer.num_training_batches)
+
     if cfg.ckpt is None: trainer.fit(model)
     else: trainer.fit(model, ckpt_path=cfg.ckpt)
 
