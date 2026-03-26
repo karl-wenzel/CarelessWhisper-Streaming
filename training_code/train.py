@@ -78,10 +78,14 @@ def train_model(log_output_dir, check_output_dir, model_name, train_set, val_set
         accumulate_grad_batches=cfg.gradient_accumulation_steps
     )
 
-    print("num_training_batches:", trainer.num_training_batches)
-
-    if cfg.ckpt is None: trainer.fit(model)
-    else: trainer.fit(model, ckpt_path=cfg.ckpt)
+    if cfg.ckpt is None:
+        print("Running full validation before training...")
+        trainer.validate(model)
+        trainer.fit(model)
+    else:
+        print("Running full validation before resumed training...")
+        trainer.validate(model, ckpt_path=cfg.ckpt)
+        trainer.fit(model, ckpt_path=cfg.ckpt)
 
 
 if __name__ == "__main__":
