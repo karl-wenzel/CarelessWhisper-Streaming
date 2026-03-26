@@ -185,7 +185,7 @@ def main():
 
         # update progress bar
         pbar.set_postfix({
-            "last": Path(row.wav_path.name)
+            "last": Path(row.wav_path).name
         })
         pbar.update(1)
 
