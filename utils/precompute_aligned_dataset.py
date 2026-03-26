@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+import sys
+from pathlib import Path
+
+# Add repo root to PYTHONPATH
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.append(str(ROOT))
+
 import argparse
 import os
 from pathlib import Path
@@ -7,6 +14,7 @@ from dataclasses import dataclass
 import pandas as pd
 import torch
 from tqdm import tqdm
+import time
 from praatio import textgrid
 
 import careless_whisper_stream
@@ -99,9 +107,9 @@ def process_row(
     multilingual: bool,
     spec_streamer: SpectrogramStream | None,
 ):
-    wav_path = row["wav_path"]
-    tg_path = row["tg_path"]
-    lang = row["lang"] if multilingual and "lang" in row and pd.notna(row["lang"]) else "en"
+    wav_path = row.wav_path
+    tg_path = row.tg_path
+    lang = row.lang if hasattr(row, "lang") and pd.notna(row.lang) else "en"
 
     tokenizer = get_tokenizer_cached(multilingual=multilingual, lang=lang)
 
@@ -144,11 +152,22 @@ def main():
 
     manifest_rows = []
 
-    for idx, row in tqdm(df.iterrows(), total=len(df), desc="Precomputing"):
+    start_time = time.time()
+
+    pbar = tqdm(
+        total=len(df),
+        desc="Precomputing",
+        unit="samples",
+        dynamic_ncols=True
+    )
+
+
+    for idx, row in enumerate(df.itertuples(index=False)):
         out_path = samples_dir / f"{idx:08d}.pt"
 
         if out_path.exists() and not args.overwrite:
             manifest_rows.append({"index": idx, "pt_path": str(out_path)})
+            pbar.update(1)
             continue
 
         item = process_row(
@@ -159,8 +178,22 @@ def main():
             multilingual=args.multilingual,
             spec_streamer=spec_streamer,
         )
+
         torch.save(item, out_path)
+
         manifest_rows.append({"index": idx, "pt_path": str(out_path)})
+
+        # update progress bar
+        pbar.set_postfix({
+            "last": Path(row.wav_path.name)
+        })
+        pbar.update(1)
+
+    pbar.close()
+
+    elapsed = time.time() - start_time
+    print(f"\nFinished in {elapsed/60:.2f} minutes")
+    print(f"Avg speed: {len(df)/elapsed:.2f} samples/sec")
 
     manifest = pd.DataFrame(manifest_rows)
     manifest.to_csv(out_dir / "manifest.csv", index=False)
