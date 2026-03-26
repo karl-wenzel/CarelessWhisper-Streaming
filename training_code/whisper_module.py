@@ -392,17 +392,30 @@ class LoRAStreamedWhisper(WhisperCustomModel):
     
     def train_dataloader(self):
         dataset = self.get_dataset(self.__train_dataset, "train")
-        return torch.utils.data.DataLoader(dataset,
-                        batch_size=self.cfg.batch_size,
-                        drop_last=True, shuffle=True, num_workers=self.cfg.num_worker, pin_memory=True,
-                        collate_fn=LoRAWhisperDataCollatorWithPadding())
+        return torch.utils.data.DataLoader(
+            dataset,
+            batch_size=self.cfg.batch_size,
+            drop_last=True,
+            shuffle=True,
+            num_workers=self.cfg.num_worker,
+            pin_memory=True,
+            persistent_workers=self.cfg.num_worker > 0,
+            prefetch_factor=4 if self.cfg.num_worker > 0 else None,
+            collate_fn=LoRAWhisperDataCollatorWithPadding(),
+        )
 
     def val_dataloader(self):
         dataset = self.get_dataset(self.__eval_dataset, "val")
-        return torch.utils.data.DataLoader(dataset,
-                        batch_size=self.cfg.batch_size,
-                        num_workers=self.cfg.num_worker, pin_memory=True,
-                        collate_fn=LoRAWhisperDataCollatorWithPadding())
+        return torch.utils.data.DataLoader(
+            dataset,
+            batch_size=self.cfg.batch_size,
+            shuffle=False,
+            num_workers=self.cfg.num_worker,
+            pin_memory=True,
+            persistent_workers=self.cfg.num_worker > 0,
+            prefetch_factor=2 if self.cfg.num_worker > 0 else None,
+            collate_fn=LoRAWhisperDataCollatorWithPadding(),
+        )
 
     def on_save_checkpoint(self, checkpoint):
         checkpoint["dims"] = self.model.dims.__dict__
