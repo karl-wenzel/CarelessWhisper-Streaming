@@ -16,17 +16,30 @@ This file defines a Python dictionary named `ds_paths`, where you should specify
 
 ds_paths = {
     'LIBRI-960-ALIGNED': {
-        'train': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/train-960.csv",  # used on training steps.
-        'val': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/dev.csv",  # used on validation steps.
-        'test': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/test.csv",  # used for evaluation.
-        'test-clean': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/test-clean.csv",  # used for evaluation on Libri-Clean.
-        'test-other': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/test-other.csv"  # used for evaluation on Libri-Other.
+        'train': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/train-960.csv",
+        'val': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/dev.csv",
+        'test': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/test.csv",
+        'test-clean': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/test-clean.csv",
+        'test-other': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/test-other.csv",
 
+        'precomputed': {
+            'train': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/precomputed/train-960/manifest.csv",
+            'val': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/precomputed/dev/manifest.csv",
+            'test': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/precomputed/test/manifest.csv",
+            'test-clean': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/precomputed/test-clean/manifest.csv",
+            'test-other': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/precomputed/test-other/manifest.csv",
+        },
     },
+
     'LIBRI-100-CLEAN-ALIGNED': {
-        'train': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/train-clean-100.csv",  # used on training steps.
-        'val': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/dev-clean.csv",  # used on validation steps.
-        'test': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/test-clean.csv"  # used for evaluation.
+        'train': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/train-clean-100.csv",
+        'val': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/dev-clean.csv",
+        'test': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/test-clean.csv",
+
+        'precomputed': {
+            'train': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/precomputed/train-clean-100/manifest.csv",
+            'val': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/precomputed/dev-clean/manifest.csv",
+            'test': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/precomputed/test-clean/manifest.csv",
+        },
     },
-    # Add you entries below.
 }

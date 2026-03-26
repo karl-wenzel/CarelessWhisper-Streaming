@@ -13,7 +13,7 @@ from careless_whisper_stream import StreamingWhisper
 from careless_whisper_stream.audio import HOP_LENGTH
 from pytorch_lightning import LightningModule
 from torch.optim.lr_scheduler import LinearLR, ReduceLROnPlateau
-from training_code.datasets_classes import TIMIT, WAVsDataset, AlignedTextGridDataset
+from training_code.datasets_classes import TIMIT, WAVsDataset, AlignedTextGridDataset, PrecomputedAlignedDataset
 from training_code.collators import WhisperDataCollatorWithPadding, LoRAWhisperDataCollatorWithPadding
 
 class WhisperCustomModel(LightningModule):
@@ -351,8 +351,15 @@ class LoRAStreamedWhisper(WhisperCustomModel):
 
     def get_dataset(self, ds_path, split):
         print(f"Stream simulation mode: {self.simulate_stream}")
+        print(f"Using precomputed features: {self.cfg.precomputed_features}")
         
         if self.full_stream:
+            if self.cfg.precomputed_features:
+                return PrecomputedAlignedDataset(
+                    manifest_path=ds_path,
+                    custom_len=self.cfg.custom_len
+                )
+            
             return AlignedTextGridDataset(ds_path=ds_path, get_streamed_mel=True, gran=self.enc_emb_gran, extra_gran_blocks=self.enc_context, n_mels=self.model.dims.n_mels, multilingual=self.cfg.multilingual)
         
         return WAVsDataset(ds_path=ds_path, get_streamed_mel=self.simulate_stream)

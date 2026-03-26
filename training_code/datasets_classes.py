@@ -168,3 +168,23 @@ class TIMIT(torch.utils.data.Dataset):
             dec_input_ids=text,
             mask=mask,
         )
+
+class PrecomputedAlignedDataset(torch.utils.data.Dataset):
+    def __init__(self, manifest_csv: str, custom_len: int = 0):
+        self.df = pd.read_csv(manifest_csv)
+        self.custom_len = custom_len
+
+        # Faster than repeated iloc on a full dataframe
+        self.paths = self.df["pt_path"].tolist()
+
+    def __len__(self):
+        return int(self.custom_len) if 0 < self.custom_len < len(self.paths) else len(self.paths)
+
+    def __getitem__(self, index):
+        item = torch.load(self.paths[index], map_location="cpu")
+        return {
+            "input_ids": item["input_ids"],
+            "dec_input_ids": item["dec_input_ids"],
+            "labels": item["labels"],
+            "endpoints": item["endpoints"],
+        }

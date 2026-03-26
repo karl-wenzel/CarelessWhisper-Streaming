@@ -120,7 +120,8 @@ if __name__ == "__main__":
         seed=SEED,
         multilingual=args.multilingual,
         custom_len=args.custom_len,
-        precision=args.precision
+        precision=args.precision,
+        precomputed_features=args.precomputed_features
     )
 
     if cfg.streaming_train:
@@ -134,13 +135,26 @@ if __name__ == "__main__":
     dir_name = cfg.name
     project_name = "lora" if (cfg.lora and cfg.streaming_train) else None
     
+    #use precomputed datasets if selected
+    selected_train = (
+        ds_paths[args.dataset]["precomputed"]["train"]
+        if args.precomputed_features
+        else ds_paths[args.dataset]["train"]
+    )
+
+    selected_val = (
+        ds_paths[args.dataset]["precomputed"]["val"]
+        if args.precomputed_features
+        else ds_paths[args.dataset]["val"]
+    )
+
     # Run trainer
     train_model(
         log_output_dir=os.path.join(logs_root, dir_name),
         check_output_dir=os.path.join(ckpt_root, dir_name),
         model_name=args.size,
-        train_set=ds_paths[args.dataset]['train'],
-        val_set=ds_paths[args.dataset]['val'],
+        train_set=selected_train,
+        val_set=selected_val,
         train_name=dir_name,
         project_name=project_name,
         cfg=cfg

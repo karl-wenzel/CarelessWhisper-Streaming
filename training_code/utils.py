@@ -25,6 +25,7 @@ class Config:
     seed: int = 3407
     custom_len: int = 0
     precision: str = "16"
+    precomputed_features: bool = False
 
     # Whisper args
     lang: str = "en"
@@ -60,6 +61,8 @@ def parse_cmdl():
     parser.add_argument('--early_stop', action="store_true", help="Use early stopping callback")
     parser.add_argument('--custom_len', type=int, help="Number of samples to train on", default=0)
     parser.add_argument('--precision', type=str, help="Which precision to use for training", default="16")
+    parser.add_argument('-precomputed_features', action="store_true", help="Uses precomputed features to speed up dataloading. " \
+    "Note that you must run precompute_aligned_dataset.py on your dataset before training, and add the correct filepaths to ds_dict.py")
     
     # DL Hyper Parameters
     parser.add_argument('--epochs', type=int, help="Number of training epochs", default=10)
@@ -83,5 +86,6 @@ def parse_cmdl():
     parser.add_argument('--streaming_train', action="store_true", help="Train sequentially on a stream of data.")
     parser.add_argument('--streaming_random', action="store_true", help="Train using random sample points, not sequentially!")
     parser.add_argument('--multilingual', action="store_true", help="Train using multilingual dataset, assuming lang field is available.")
+
 
     return parser.parse_args()
