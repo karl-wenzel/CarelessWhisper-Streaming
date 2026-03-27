@@ -79,12 +79,12 @@ def train_model(log_output_dir, check_output_dir, model_name, train_set, val_set
     )
 
     if cfg.ckpt is None:
-        print("Running full validation before training...")
-        trainer.validate(model)
+        #print("Running full validation before training...")
+        #trainer.validate(model)
         trainer.fit(model)
     else:
-        print("Running full validation before resumed training...")
-        trainer.validate(model, ckpt_path=cfg.ckpt)
+        #print("Running full validation before resumed training...")
+        #trainer.validate(model, ckpt_path=cfg.ckpt)
         trainer.fit(model, ckpt_path=cfg.ckpt)
 
 
