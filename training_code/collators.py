@@ -54,7 +54,7 @@ class LoRAWhisperDataCollatorWithPadding:
         dec_input_ids = [f["dec_input_ids"] for f in features]
         endpoints = [f["endpoints"] for f in features]
 
-        # fast batch stacking
+        input_ids = [x.squeeze(0) if x.ndim == 3 and x.shape[0] == 1 else x for x in input_ids]
         input_ids = torch.stack(input_ids)
 
         labels = torch.nn.utils.rnn.pad_sequence(
