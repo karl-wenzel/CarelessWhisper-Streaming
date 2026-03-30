@@ -5,6 +5,8 @@ import random
 import evaluate
 import careless_whisper_stream
 import careless_whisper_stream.tokenizer as whisper_tokenizer
+import jiwer
+import time
 
 from torch import nn, Tensor
 from torch.optim.adamw import AdamW
@@ -153,7 +155,7 @@ class WhisperCustomModel(LightningModule):
     
 
 class LoRAStreamedWhisper(WhisperCustomModel):
-    def __init__(self, cfg: Config, model_name="tiny", lang="en", train_dataset: str = None, eval_dataset: str = None, task="transcribe", rank=8, enc_emb_gran=15, enc_context=1, sim_stream=False, beam_size=None, use_kv_cache=False, use_ca_kv_cache=False, get_times=False, eval_script=False) -> None:
+    def __init__(self, cfg: Config, model_name="tiny", lang="en", train_dataset: str = None, eval_dataset: str = None, task="transcribe", rank=8, enc_emb_gran=15, enc_context=1, sim_stream=False, beam_size=None, use_kv_cache=False, use_ca_kv_cache=False, get_times=False, eval_script=False, calc_rwer_arwer=False) -> None:
         super().__init__(cfg, model_name, lang, train_dataset, eval_dataset, task)
 
         self.automatic_optimization = not cfg.streaming_train
@@ -184,6 +186,7 @@ class LoRAStreamedWhisper(WhisperCustomModel):
         self.use_ca_kv_cache = use_ca_kv_cache
         self.get_times = get_times
         self.eval_script = eval_script
+        self.calc_rwer_arwer = calc_rwer_arwer
 
         # for stream mode train
         self.num_frames = self.model.dims.n_audio_ctx // self.enc_emb_gran # 1500 // enc_emb_gran
@@ -321,13 +324,24 @@ class LoRAStreamedWhisper(WhisperCustomModel):
         out, loss = self._forward_step(batch, "val")
         wer = self.calc_wer_val(out, batch["labels"])
 
-        self.log("val/loss", loss, on_step=True, prog_bar=True, logger=True, sync_dist=True)
-        self.log("val/wer", wer, on_step=True, prog_bar=True, logger=True, sync_dist=True)
+        self.log("val/loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+        self.log("val/wer", wer, on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
 
-        return {
+        result = {
             "wer": wer,
             "loss": loss
         }
+
+        if self.calc_rwer_arwer and self.full_stream and "endpoints" in batch:
+            rwer, arwer = self._calc_streaming_rwer_arwer(batch)
+
+            self.log("val/rwer", rwer, on_step=True, on_epoch=True, prog_bar=False, logger=True, sync_dist=True)
+            self.log("val/arwer", arwer, on_step=True, on_epoch=True, prog_bar=False, logger=True, sync_dist=True)
+
+            result["rwer"] = rwer
+            result["arwer"] = arwer
+
+        return result
 
     def predict_step(self, batch, batch_id):
         wavs = batch["wav_path"]
@@ -420,3 +434,97 @@ class LoRAStreamedWhisper(WhisperCustomModel):
 
     def on_save_checkpoint(self, checkpoint):
         checkpoint["dims"] = self.model.dims.__dict__
+
+    def _decode_logits_to_texts(self, out: Tensor):
+        pred_ids = torch.argmax(out, dim=-1)
+        texts = []
+        for seq in pred_ids:
+            texts.append(self.tokenizer.decode(seq.detach().cpu().tolist()).strip().lower())
+        return texts
+
+    def _decode_labels_to_texts(self, labels: Tensor):
+        labels = labels.clone()
+        labels[labels == -100] = self.tokenizer.eot
+
+        texts = []
+        for seq in labels:
+            texts.append(self.tokenizer.decode(seq.detach().cpu().tolist()).strip().lower())
+        return texts
+
+    def _calculate_idsc_batch(self, references, hypotheses):
+        insertions = deletions = substitutions = hits = 0
+
+        for ref, hyp in zip(references, hypotheses):
+            if not ref and not hyp:
+                continue
+            if not ref:
+                insertions += len(hyp.split())
+                continue
+            if not hyp:
+                deletions += len(ref.split())
+                continue
+
+            out = jiwer.process_words(ref, hyp)
+            insertions += out.insertions
+            deletions += out.deletions
+            substitutions += out.substitutions
+            hits += out.hits
+
+        return insertions, deletions, substitutions, hits
+
+    def _calc_streaming_rwer_arwer(self, batch):
+        input_ids = batch["input_ids"]
+        labels = batch["labels"].long()
+        dec_input_ids = batch["dec_input_ids"].long()
+        endpoints = batch["endpoints"]
+
+        sample_points = self._get_sample_points(endpoints)
+
+        global_rwer_num, global_rwer_den = 0, 0
+        global_arwer_num, global_arwer_den = 0, 0
+
+        for i in sample_points:
+            if self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+            start_time = time.perf_counter()
+
+            audio_features = self.model.encoder(
+                input_ids[..., :(i + 1) * (self.enc_emb_gran * 2)],
+                index=[0, (i + 1) * self.enc_emb_gran],
+                mask=True
+            )
+            out = self.model.decoder(dec_input_ids, audio_features, dump_type="None")
+
+            if self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+            processing_latency = time.perf_counter() - start_time
+
+            hyp_texts = self._decode_logits_to_texts(out)
+
+            # RWER: compare against prefix available at audio time rho
+            frame_labels_rho = self._calc_labels(labels, endpoints, i)
+            ref_texts_rho = self._decode_labels_to_texts(frame_labels_rho)
+
+            i_r, d_r, s_r, c_r = self._calculate_idsc_batch(ref_texts_rho, hyp_texts)
+            global_rwer_num += (i_r + d_r + s_r)
+            global_rwer_den += (c_r + d_r + s_r)
+
+            # ARWER: compare against prefix available at real time tau = rho + latency
+            tau_seconds = ((i + 1) * self.enc_emb_gran * 0.02) + processing_latency
+            tau_index = min(
+                int(tau_seconds / (self.enc_emb_gran * 0.02)) - 1,
+                self.num_frames - 1
+            )
+            tau_index = max(tau_index, self.enc_context)
+
+            frame_labels_tau = self._calc_labels(labels, endpoints, tau_index)
+            ref_texts_tau = self._decode_labels_to_texts(frame_labels_tau)
+
+            i_a, d_a, s_a, c_a = self._calculate_idsc_batch(ref_texts_tau, hyp_texts)
+            global_arwer_num += (i_a + d_a + s_a)
+            global_arwer_den += (c_a + d_a + s_a)
+
+        rwer = global_rwer_num / global_rwer_den if global_rwer_den > 0 else 0.0
+        arwer = global_arwer_num / global_arwer_den if global_arwer_den > 0 else 0.0
+
+        return rwer, arwer

@@ -26,6 +26,8 @@ class Config:
     custom_len: int = 0
     precision: str = "16"
     precomputed_features: bool = False
+    warmstart: str = ""
+    extra_eval: bool = False
 
     # Whisper args
     lang: str = "en"
@@ -61,6 +63,8 @@ def parse_cmdl():
     parser.add_argument('--early_stop', action="store_true", help="Use early stopping callback")
     parser.add_argument('--custom_len', type=int, help="Number of samples to train on", default=0)
     parser.add_argument('--precision', type=str, help="Which precision to use for training", default="16")
+    parser.add_argument('--warmstart', type=str, help="Warm-Start the model training from a specified local model.", default="")
+    parser.add_argument('-extra_eval', action="store_true", help="Compute RWER and ARWER during training validation steps.")
     parser.add_argument('-precomputed_features', action="store_true", help="Uses precomputed features to speed up dataloading. " \
     "Note that you must run precompute_aligned_dataset.py on your dataset before training, and add the correct filepaths to ds_dict.py")
     
