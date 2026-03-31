@@ -52,6 +52,8 @@ def transcribe(
     streaming_timestamps: bool = False,
     force_first_tokens_timestamps: bool = False,
     verbose: bool = True,
+    ms_granularity: int = None,
+    extra_initial_blocks: int = None,
     **kwargs
 ) -> List[str]:
     """
@@ -73,7 +75,8 @@ def transcribe(
     model.eval()
     
     # Instantiate streaming instance and open a stream
-    ms_gran = model.encoder.gran * 20
+    ms_gran = model.encoder.gran * 20 if ms_granularity is None else ms_granularity
+    assert ms_gran % 20 == 0, "ms_granularity must be a multiple of 20"
     stream_instance = MyStream(ms_gran,
                                channels=channels,
                                filename=output_filename, 
@@ -88,16 +91,18 @@ def transcribe(
     # frames - used only when filename is given, in order to save a long wav at the end of the conversation.
     frames = []
 
+    extra_gran_blocks = extra_initial_blocks if extra_initial_blocks is not None else model.encoder.extra_gran_blocks
+
     # first we'll use
     decoding_options = DecodingOptions(
         language=language,
-        gran=model.encoder.gran,
+        gran=(ms_gran // 20),
         single_frame_mel=single_frame_mel,
         without_timestamps=True,
         beam_size=beam_size if temperature == 0 else None,
         temperature=temperature,
         length_penalty=None,
-        look_ahead_blocks=model.encoder.extra_gran_blocks,
+        look_ahead_blocks=extra_gran_blocks,
         patience=None,
         stream_decode=stream_decode,
         use_kv_cache=sa_kv_cache,
