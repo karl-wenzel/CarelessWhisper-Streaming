@@ -20,8 +20,17 @@ ckpt_root = f"{os.environ.get('HOME')}/ma/data/models/ckpts"
 
 
 def _extract_epoch_from_name(path: Path) -> int:
-    m = re.search(r"checkpoint-(\d{4})$", path.name)
-    return int(m.group(1)) if m else -1
+    patterns = [
+        r"checkpoint-(\d{4})$",
+        r"checkpoint-(\d{4})\.ckpt$",
+        r"checkpoint-epoch=(\d{4})$",
+        r"checkpoint-epoch=(\d{4})\.ckpt$",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, path.name)
+        if m:
+            return int(m.group(1))
+    return -1
 
 
 def _resolve_checkpoint_path(model_run_name: str, checkpoint: int | None) -> Path:
@@ -29,10 +38,16 @@ def _resolve_checkpoint_path(model_run_name: str, checkpoint: int | None) -> Pat
     Resolve a checkpoint inside:
         {ckpt_root}/{model_run_name}/checkpoint/
 
+    Accepted filename styles:
+    - checkpoint-0007
+    - checkpoint-0007.ckpt
+    - checkpoint-epoch=0007
+    - checkpoint-epoch=0007.ckpt
+
     Rules:
-    - if --checkpoint N is given -> use checkpoint-00NN
+    - if --checkpoint N is given -> use the matching epoch-N checkpoint
     - else prefer best_model_path from Lightning metadata
-    - else fall back to highest checkpoint-XXXX
+    - else fall back to highest epoch checkpoint
     """
     run_dir = Path(ckpt_root) / model_run_name
     checkpoint_dir = run_dir / "checkpoint"
@@ -45,17 +60,22 @@ def _resolve_checkpoint_path(model_run_name: str, checkpoint: int | None) -> Pat
         raise FileNotFoundError(f"No checkpoint files found in: {checkpoint_dir}")
 
     if checkpoint is not None:
-        target = checkpoint_dir / f"checkpoint-{checkpoint:04d}"
-        if target.exists():
-            return target
+        candidates = [
+            checkpoint_dir / f"checkpoint-{checkpoint:04d}",
+            checkpoint_dir / f"checkpoint-{checkpoint:04d}.ckpt",
+            checkpoint_dir / f"checkpoint-epoch={checkpoint:04d}",
+            checkpoint_dir / f"checkpoint-epoch={checkpoint:04d}.ckpt",
+        ]
 
-        alt = checkpoint_dir / f"checkpoint-{checkpoint:04d}.ckpt"
-        if alt.exists():
-            return alt
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
 
+        available = sorted(p.name for p in ckpt_files)
         raise FileNotFoundError(
-            f"Requested checkpoint {checkpoint} not found. "
-            f"Tried: {target} and {alt}"
+            f"Requested checkpoint {checkpoint} not found in {checkpoint_dir}. "
+            f"Tried: {', '.join(str(p) for p in candidates)}. "
+            f"Available files: {available}"
         )
 
     # Try to recover best_model_path from saved Lightning callback metadata
@@ -71,17 +91,14 @@ def _resolve_checkpoint_path(model_run_name: str, checkpoint: int | None) -> Pat
         except Exception:
             pass
 
-    # Fall back to highest checkpoint-XXXX
-    numbered = [
-        p for p in ckpt_files
-        if re.match(r"checkpoint-\d{4}(\.ckpt)?$", p.name)
-    ]
-    if not numbered:
+    # Fall back to highest epoch checkpoint across supported naming formats
+    epoch_ckpts = [p for p in ckpt_files if _extract_epoch_from_name(p) >= 0]
+    if not epoch_ckpts:
         raise FileNotFoundError(
-            f"No checkpoint files matching 'checkpoint-XXXX' found in: {checkpoint_dir}"
+            f"No supported checkpoint files found in: {checkpoint_dir}"
         )
 
-    return max(numbered, key=_extract_epoch_from_name)
+    return max(epoch_ckpts, key=_extract_epoch_from_name)
 
 
 def extract_words_and_times_from_tg(tg_path):
