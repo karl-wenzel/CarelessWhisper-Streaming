@@ -43,8 +43,10 @@ project_names = {
 
 
 def _extract_epoch_from_name(path: Path) -> int:
-    m = re.search(r"checkpoint-(\d{4})$", path.name)
-    return int(m.group(1)) if m else -1
+    m = re.fullmatch(r"checkpoint-epoch=(-?\d+)\.ckpt", path.name)
+    if m:
+        return int(m.group(1))
+    return -10**9
 
 
 def _find_best_warmstart_checkpoint(run_name: str) -> str:
@@ -52,9 +54,13 @@ def _find_best_warmstart_checkpoint(run_name: str) -> str:
     Looks in:
         {ckpt_root}/{run_name}/checkpoint/
 
+    Accepted filename style ONLY:
+    - checkpoint-epoch=XXXX.ckpt
+    - checkpoint-epoch=-001.ckpt
+
     Preference order:
     1. best_model_path from a Lightning callback state in the checkpoint
-    2. numerically highest checkpoint-XXXX
+    2. numerically highest checkpoint-epoch=XXXX.ckpt
     """
     run_dir = Path(ckpt_root) / run_name
     checkpoint_dir = run_dir / "checkpoint"
@@ -64,10 +70,13 @@ def _find_best_warmstart_checkpoint(run_name: str) -> str:
             f"Warmstart checkpoint directory not found: {checkpoint_dir}"
         )
 
-    ckpt_files = [p for p in checkpoint_dir.iterdir() if p.is_file()]
+    ckpt_files = [
+        p for p in checkpoint_dir.iterdir()
+        if p.is_file() and re.fullmatch(r"checkpoint-epoch=-?\d+\.ckpt", p.name)
+    ]
     if not ckpt_files:
         raise FileNotFoundError(
-            f"No checkpoint files found in: {checkpoint_dir}"
+            f"No valid checkpoint files found in: {checkpoint_dir}"
         )
 
     # 1) Try to recover best_model_path from any saved Lightning checkpoint metadata
@@ -79,19 +88,15 @@ def _find_best_warmstart_checkpoint(run_name: str) -> str:
                 if isinstance(cb_state, dict):
                     best_model_path = cb_state.get("best_model_path")
                     if best_model_path and os.path.exists(best_model_path):
-                        print(f"Using best warmstart checkpoint from metadata: {best_model_path}")
-                        return best_model_path
+                        best_path = Path(best_model_path)
+                        if re.fullmatch(r"checkpoint-epoch=-?\d+\.ckpt", best_path.name):
+                            print(f"Using best warmstart checkpoint from metadata: {best_model_path}")
+                            return str(best_path)
         except Exception:
             pass
 
-    # 2) Fall back to highest checkpoint-XXXX
-    numbered = [p for p in ckpt_files if re.match(r"checkpoint-\d{4}$", p.name)]
-    if not numbered:
-        raise FileNotFoundError(
-            f"No checkpoint files matching 'checkpoint-XXXX' found in: {checkpoint_dir}"
-        )
-
-    best_fallback = max(numbered, key=_extract_epoch_from_name)
+    # 2) Fall back to highest checkpoint epoch
+    best_fallback = max(ckpt_files, key=_extract_epoch_from_name)
     print(f"Using latest warmstart checkpoint by epoch fallback: {best_fallback}")
     return str(best_fallback)
 
