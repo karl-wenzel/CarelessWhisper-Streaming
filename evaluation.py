@@ -20,17 +20,10 @@ ckpt_root = f"{os.environ.get('HOME')}/ma/data/models/ckpts"
 
 
 def _extract_epoch_from_name(path: Path) -> int:
-    patterns = [
-        r"checkpoint-(\d{4})$",
-        r"checkpoint-(\d{4})\.ckpt$",
-        r"checkpoint-epoch=(\d{4})$",
-        r"checkpoint-epoch=(\d{4})\.ckpt$",
-    ]
-    for pattern in patterns:
-        m = re.search(pattern, path.name)
-        if m:
-            return int(m.group(1))
-    return -1
+    m = re.fullmatch(r"checkpoint-epoch=(-?\d{4})\.ckpt", path.name)
+    if m:
+        return int(m.group(1))
+    return -10**9
 
 
 def _resolve_checkpoint_path(model_run_name: str, checkpoint: int | None) -> Path:
@@ -38,14 +31,11 @@ def _resolve_checkpoint_path(model_run_name: str, checkpoint: int | None) -> Pat
     Resolve a checkpoint inside:
         {ckpt_root}/{model_run_name}/checkpoint/
 
-    Accepted filename styles:
-    - checkpoint-0007
-    - checkpoint-0007.ckpt
-    - checkpoint-epoch=0007
-    - checkpoint-epoch=0007.ckpt
+    Accepted filename style ONLY:
+    - checkpoint-epoch=XXXX.ckpt
 
     Rules:
-    - if --checkpoint N is given -> use the matching epoch-N checkpoint
+    - if --checkpoint N is given -> use checkpoint-epoch=XXXX.ckpt
     - else prefer best_model_path from Lightning metadata
     - else fall back to highest epoch checkpoint
     """
@@ -55,30 +45,31 @@ def _resolve_checkpoint_path(model_run_name: str, checkpoint: int | None) -> Pat
     if not checkpoint_dir.exists():
         raise FileNotFoundError(f"Checkpoint directory not found: {checkpoint_dir}")
 
-    ckpt_files = [p for p in checkpoint_dir.iterdir() if p.is_file()]
+    ckpt_files = [
+        p for p in checkpoint_dir.iterdir()
+        if p.is_file() and re.fullmatch(r"checkpoint-epoch=-?\d{4}\.ckpt", p.name)
+    ]
+
     if not ckpt_files:
-        raise FileNotFoundError(f"No checkpoint files found in: {checkpoint_dir}")
-
-    if checkpoint is not None:
-        candidates = [
-            checkpoint_dir / f"checkpoint-{checkpoint:04d}",
-            checkpoint_dir / f"checkpoint-{checkpoint:04d}.ckpt",
-            checkpoint_dir / f"checkpoint-epoch={checkpoint:04d}",
-            checkpoint_dir / f"checkpoint-epoch={checkpoint:04d}.ckpt",
-        ]
-
-        for candidate in candidates:
-            if candidate.exists():
-                return candidate
-
-        available = sorted(p.name for p in ckpt_files)
         raise FileNotFoundError(
-            f"Requested checkpoint {checkpoint} not found in {checkpoint_dir}. "
-            f"Tried: {', '.join(str(p) for p in candidates)}. "
-            f"Available files: {available}"
+            f"No valid checkpoint files found in: {checkpoint_dir}"
         )
 
-    # Try to recover best_model_path from saved Lightning callback metadata
+    # --- Explicit checkpoint requested ---
+    if checkpoint is not None:
+        target = checkpoint_dir / f"checkpoint-epoch={checkpoint:04d}.ckpt"
+
+        if target.exists():
+            return target
+
+        available_epochs = sorted(_extract_epoch_from_name(p) for p in ckpt_files)
+        raise FileNotFoundError(
+            f"Requested checkpoint {checkpoint} not found.\n"
+            f"Expected: {target}\n"
+            f"Available epochs: {available_epochs}"
+        )
+
+    # --- Try Lightning best checkpoint ---
     for ckpt_path in sorted(ckpt_files):
         try:
             ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
@@ -91,14 +82,8 @@ def _resolve_checkpoint_path(model_run_name: str, checkpoint: int | None) -> Pat
         except Exception:
             pass
 
-    # Fall back to highest epoch checkpoint across supported naming formats
-    epoch_ckpts = [p for p in ckpt_files if _extract_epoch_from_name(p) >= 0]
-    if not epoch_ckpts:
-        raise FileNotFoundError(
-            f"No supported checkpoint files found in: {checkpoint_dir}"
-        )
-
-    return max(epoch_ckpts, key=_extract_epoch_from_name)
+    # --- Fallback: latest epoch ---
+    return max(ckpt_files, key=_extract_epoch_from_name)
 
 
 def extract_words_and_times_from_tg(tg_path):

@@ -116,6 +116,34 @@ def _apply_warmstart(model: LoRAStreamedWhisper, cfg: Config, model_name: str) -
     print(f"Missing keys: {len(missing)}, Unexpected keys: {len(unexpected)}")
 
 
+def _save_untrained_checkpoint(model: LoRAStreamedWhisper, check_output_dir: str, cfg: Config) -> Path:
+    checkpoint_dir = Path(check_output_dir) / "checkpoint"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    save_path = checkpoint_dir / "checkpoint-epoch=-001.ckpt"
+
+    checkpoint = {
+        "state_dict": model.model.state_dict(),
+        "hyper_parameters": {
+            "size": cfg.size,
+            "enc_emb_gran": cfg.gran,
+            "gran": cfg.gran,
+            "enc_context": cfg.extra_gran_blocks,
+            "extra_gran_blocks": cfg.extra_gran_blocks,
+            "rank": cfg.rank,
+            "multilingual": cfg.multilingual,
+        },
+        "cfg": vars(cfg),
+    }
+
+    if hasattr(model.model, "dims"):
+        checkpoint["dims"] = vars(model.model.dims)
+
+    torch.save(checkpoint, save_path)
+    print(f"Saved untrained checkpoint to: {save_path}")
+    return save_path
+
+
 def train_model(log_output_dir, check_output_dir, model_name, train_set, val_set, train_name, project_name, cfg: Config) -> None:
     Path(log_output_dir).mkdir(exist_ok=True)
     Path(check_output_dir).mkdir(exist_ok=True)
@@ -169,6 +197,12 @@ def train_model(log_output_dir, check_output_dir, model_name, train_set, val_set
     if cfg.warmstart not in (None, ""):
         print(f"Warmstarting from run: {cfg.warmstart}")
         _apply_warmstart(model, cfg, model_name)
+
+    # Save freshly initialized / optionally warmstarted model and exit
+    if getattr(cfg, "save_untrained", False):
+        _save_untrained_checkpoint(model, check_output_dir, cfg)
+        print("Saved untrained checkpoint only. Exiting without training.")
+        return
 
     trainer = Trainer(
         accelerator=DEVICE,
@@ -232,7 +266,8 @@ if __name__ == "__main__":
         precision=args.precision,
         precomputed_features=args.precomputed_features,
         warmstart=args.warmstart,
-        extra_eval=args.extra_eval
+        extra_eval=args.extra_eval,
+        save_untrained=args.save_untrained,
     )
 
     if cfg.streaming_train:

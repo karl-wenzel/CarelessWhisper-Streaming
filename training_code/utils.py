@@ -67,6 +67,7 @@ def parse_cmdl():
     parser.add_argument('-extra_eval', action="store_true", help="Compute RWER and ARWER during training validation steps.")
     parser.add_argument('-precomputed_features', action="store_true", help="Uses precomputed features to speed up dataloading. " \
     "Note that you must run precompute_aligned_dataset.py on your dataset before training, and add the correct filepaths to ds_dict.py")
+    parser.add_argument("-save_untrained", action="store_true", help="Save the freshly initialized LoRAStreamedWhisper as checkpoint -1 and exit",)
     
     # DL Hyper Parameters
     parser.add_argument('--epochs', type=int, help="Number of training epochs", default=10)
