@@ -45,6 +45,7 @@ class Config:
     streaming_fraction: float = 1
     streaming_random: bool = False
     multilingual: bool = False
+    save_untrained : bool = False
 
 def parse_cmdl():
     # parser
