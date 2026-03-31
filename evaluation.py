@@ -286,7 +286,9 @@ def evaluate():
     print(f"Stats saved to: {save_path}")
 
     print("\n" + "=" * 30)
-    print(f"RESULTS FOR: {args.dataset_name}")
+    print(f"RESULTS FOR:")
+    print(f"MODEL: {args.model} on DATASET: {args.dataset_name}")
+    print(f"PARTITION: {args.dataset_partition} % SAMPLES: {args.dataset_fraction}")
     print(f"CHECKPOINT:    {ckpt_path.name}")
     print(f"WER:           {wer * 100:.2f}%")
     print(f"RWER:          {rwer * 100:.2f}%")
