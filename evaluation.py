@@ -20,7 +20,7 @@ ckpt_root = f"{os.environ.get('HOME')}/ma/data/models/ckpts"
 
 
 def _extract_epoch_from_name(path: Path) -> int:
-    m = re.fullmatch(r"checkpoint-epoch=(-?\d{4})\.ckpt", path.name)
+    m = re.fullmatch(r"checkpoint-epoch=(-?\d+)\.ckpt", path.name)
     if m:
         return int(m.group(1))
     return -10**9
