@@ -18,3 +18,4 @@ streaming_transcription_greedy.py
 run_tomer_repro.sh
 local_agreement_streaming_transcription.py
 .vscode/
+deploy_ckpts.txt

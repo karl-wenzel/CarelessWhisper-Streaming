@@ -15,8 +15,8 @@ To set up the project environment using `conda`, follow these steps:
 
 1. **Clone the repository**  
    ```bash
-   git clone https://github.com/tomer9080/WhisperRT-streaming
-   cd WhisperRT-streaming
+   git clone https://github.com/tomer9080/WhisperRT-Streaming
+   cd WhisperRT-Streaming
    ```
 
 > 💡 Make sure you have [Miniconda](https://docs.conda.io/en/latest/miniconda.html) or [Anaconda](https://www.anaconda.com/products/distribution) installed before proceeding.
@@ -44,12 +44,15 @@ After installing all of the dependencies, you can try to run inference.
 ## 🤖 Available Models
 We fine-tuned three different sizes of Whisper, all support english only transcription.
 A `large-v2` that was fine tuned on multilingual data is available, and supports English, French, Spanish, German and Portuguese with chunk size of 300 miliseconds.
+* **RCS Models (Random Chunk Size)**
+RCS denotes checkpoints trained using a mask with random chunk sizes ranging from 0.1 to 1.0 seconds. These models are optimized for transcription tasks using any chunk size within that specific interval.
+   > Note: These models were initialized with a base training chunk size of 600ms.
 
 | Size | Chunk Size [msec] | Multilingual | 
 |:----:|:-----------------:|:------------:|
-| base | 40, 100, 200, 300 |  N/A         |
-| small| 40, 100, 200, 300, 1000| N/A     |
-|large-v2| 40, 100, 200, 300, 1000| 300   |
+| base | 40, 100, 200, 300, RCS |  N/A         |
+| small| 40, 100, 200, 300, 1000, RCS| N/A     |
+|large-v2| 40, 100, 200, 300, 1000, RCS | 300   |
 
 
 ## 🎤 Running Inference
@@ -118,22 +121,40 @@ chunk_size = 300 # chunk size in milliseconds
 multilingual = False # currently on large-v2_300msec supports other languages than english.
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
+# Loading a fixed chunk size model
 model = whisper_rt.load_streaming_model(name=model_size,
-                                                   gran=chunk_size,
-                                                   multilingual=multilingual,
-                                                   device=device)
+                                        gran=chunk_size,
+                                        multilingual=multilingual,
+                                        device=device)
+
 
 # using a local microphone recording 
 texts_microphone = model.transcribe(output_filename="/path/to/dump/file.wav",
-                         channels=2,
-                         beam_size=5,
-                         ca_kv_cache=True)
+                                    channels=2,
+                                    beam_size=5,
+                                    ca_kv_cache=True)
 
 # Simulating on a wav file
 texts_wav_simulation = model.transcribe(simulate_stream=True,
                                         wav_file="/path/to/file/you/want/to/transcribe.wav",
                                         beam_size=5,
                                         ca_kv_cache=True)
+
+# loading an RCS model, no need in gran field
+model_rcs = whisper_rt.load_streaming_model(name=model_size,
+                                            varying_chunk_size=True,
+                                            multilingual=multilingual,
+                                            device=device)
+
+# Simulating on a wav file using an RCS model.
+# Note: ms_gran and extra_initial_blocks field must be specified when using an RCS model!
+texts_wav_simulation_rcs = model.transcribe(simulate_stream=True,
+                                            wav_file="/path/to/file/you/want/to/transcribe.wav",
+                                            beam_size=5,
+                                            ca_kv_cache=True,
+                                            ms_gran=240,
+                                            extra_initial_blocks=2)
+
 ```
 
 ## 🦾 Training
@@ -164,6 +185,8 @@ mfa align --clean /dataset/root/path english_us_arpa english_us_arpa /aligned_da
 For more details on how to run using `mfa` command, visit [MFA site](https://montreal-forced-aligner.readthedocs.io/en/latest/index.html).
 
 ### 🖥️ CLI Interface
+Below is an example of training a model of size `base`, using a fixed chunk size.
+
 ```bash
 python training_code/train.py \
 --lora \
@@ -180,6 +203,24 @@ python training_code/train.py \
 --extra_gran_blocks 1 \
 --streaming_fraction 0.25 \
 --top_k 5 \
+```
+
+An example of a training script of `large-v2` model with random chunk size mask:
+
+```bash
+python training_code/train.py \
+--lora \
+--streaming_train \
+--simulate_stream \
+--dataset LIBRI-960-ALIGNED \
+--name training-name \
+--size base \
+--batch_size 4 \
+--rank 4 \
+--learning_rate 1e-5 \
+--epochs 3 \
+--random_masking \
+--num_slices 30
 ```
 
 For more options and training configurations, run:

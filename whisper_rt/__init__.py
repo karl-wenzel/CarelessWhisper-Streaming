@@ -36,6 +36,7 @@ _STREAMING_MODELS_HF = {
         "200": "base_200.pt",
         "100": "base_100.pt",
         "40": "base_40.pt",
+        "rcs": "base_rcs.pt",
     },
     "small": {
         "1000": "small_1000.pt",
@@ -43,6 +44,7 @@ _STREAMING_MODELS_HF = {
         "200": "small_200.pt",
         "100": "small_100.pt",
         "40": "small_40.pt",
+        "rcs": "small_rcs.pt",
     },
     "large-v2": {
         "1000": "large-v2_1000.pt",
@@ -51,6 +53,7 @@ _STREAMING_MODELS_HF = {
         "100": "large-v2_100.pt",
         "40": "large-v2_40.pt",
         "300-multi": "large-v2_300_multi.pt",
+        "rcs": "large-v2_rcs.pt",
     }
 }
 
@@ -277,12 +280,14 @@ def load_streaming_model(
     name: str,
     gran: int = 300, 
     multilingual: bool = False,
+    varying_chunk_size: bool = False,
     device: Optional[Union[str, torch.device]] = None,
     download_root: str = None,
     in_memory: bool = False,
 ) -> StreamingWhisper:   
     
-    subname = (str(gran) + '-multi') if multilingual else str(gran)
+    # Choose between multilingual models, varying chunk size and regular models.
+    subname = (str(gran) + '-multi') if multilingual else 'rcs' if varying_chunk_size else str(gran)
     
     from huggingface_hub import hf_hub_download
 
@@ -308,5 +313,9 @@ def load_streaming_model(
                              extra_gran_blocks=checkpoint['cfg']['extra_gran_blocks'])
 
     model.load_state_dict(checkpoint['state_dict'], strict=False)
+
+    if varying_chunk_size:
+        print("Using a model with varying chunk size. Setting random_masked_model to True.")
+        model.random_masked_model = True
 
     return model.to(device)
