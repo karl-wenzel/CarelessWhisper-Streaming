@@ -5,14 +5,14 @@ import pickle
 import torchaudio
 import numpy as np
 import pandas as pd
-import careless_whisper_stream
-import careless_whisper_stream.tokenizer
+import whisper_rt
+import whisper_rt.tokenizer
 from praatio import textgrid
 from dataclasses import dataclass
 from torchaudio.datasets.utils import _extract_tar
 from torchaudio._internal import download_url_to_file
-from careless_whisper_stream.tokenizer import Tokenizer
-from careless_whisper_stream.audio import SpectrogramStream
+from whisper_rt.tokenizer import Tokenizer
+from whisper_rt.audio import SpectrogramStream
 
 from pathlib import Path
 from typing import List, Optional, Tuple, Union, Dict
@@ -38,14 +38,14 @@ class WAVsTextsDataset(torch.utils.data.Dataset):
 class WAVsDataset(torch.utils.data.Dataset):
     def __init__(self, ds_path: str, 
                  sep="\t", 
-                 tokenizer: careless_whisper_stream.tokenizer = None, 
+                 tokenizer: whisper_rt.tokenizer = None, 
                  no_labels: bool = False, 
                  custom_len: int = 0,
                  get_streamed_mel: bool = False) -> None:
         super().__init__()
 
         if not no_labels:
-            self.tokenizer = tokenizer if tokenizer else careless_whisper_stream.tokenizer.get_tokenizer(True, language="en", task="transcribe")
+            self.tokenizer = tokenizer if tokenizer else whisper_rt.tokenizer.get_tokenizer(True, language="en", task="transcribe")
         self.ds_df = pd.read_csv(ds_path[0], sep=sep, index_col=False)
         self.sr = 16_000
         self.no_labels = no_labels
@@ -60,13 +60,13 @@ class WAVsDataset(torch.utils.data.Dataset):
             spec_streamer = SpectrogramStream()
             return spec_streamer._simulate_streaming_log_spec(torch.tensor(audio)).squeeze(0)
             
-        return careless_whisper_stream.log_mel_spectrogram(audio)
+        return whisper_rt.log_mel_spectrogram(audio)
 
     def __getitem__(self, idx):
         item = self.ds_df.iloc[idx]
 
-        audio = careless_whisper_stream.load_audio(item["wav_path"], sr=self.sr)
-        audio = careless_whisper_stream.pad_or_trim(audio.flatten())
+        audio = whisper_rt.load_audio(item["wav_path"], sr=self.sr)
+        audio = whisper_rt.pad_or_trim(audio.flatten())
         mel = self._calc_mel(audio)
         
         if self.no_labels: return dict(input_ids=mel)
@@ -104,7 +104,7 @@ class AlignedTextGridDataset(torch.utils.data.Dataset):
                  split='train'): # most of the times we train just on english librispeech
         super().__init__()
 
-        self.tokenizer = tokenizer if tokenizer else careless_whisper_stream.tokenizer.get_tokenizer(True, language="en", task="transcribe")
+        self.tokenizer = tokenizer if tokenizer else whisper_rt.tokenizer.get_tokenizer(True, language="en", task="transcribe")
         print("Reading ds")
         self.ds_df = pd.concat([pd.read_csv(path, sep=separator) for path in ds_path], ignore_index=True)
         print("finished Reading ds, its length: ", len(self.ds_df), len(self.alignments_cache))
@@ -124,7 +124,7 @@ class AlignedTextGridDataset(torch.utils.data.Dataset):
             spec_streamer = SpectrogramStream(n_mels=self.n_mels)
             return spec_streamer._simulate_streaming_log_spec(torch.tensor(audio))
             
-        return careless_whisper_stream.log_mel_spectrogram(audio)
+        return whisper_rt.log_mel_spectrogram(audio)
 
     def _get_intervals_from_wrd_file(self, path: str):
         with open(path, "r") as file:
@@ -140,7 +140,7 @@ class AlignedTextGridDataset(torch.utils.data.Dataset):
     def __getitem__(self, index):
         item = self.ds_df.iloc[index]
 
-        audio = careless_whisper_stream.pad_or_trim(careless_whisper_stream.load_audio(item["wav_path"], sr=self.sr))
+        audio = whisper_rt.pad_or_trim(whisper_rt.load_audio(item["wav_path"], sr=self.sr))
         mel = self._calc_mel(audio)
         
         if ".wrd" in item["tg_path"]:
@@ -150,7 +150,7 @@ class AlignedTextGridDataset(torch.utils.data.Dataset):
             tg = textgrid.openTextgrid(path, includeEmptyIntervals=False)
             text_intervals = tg.getTier("words") if path.suffix == '.TextGrid' else tg.getTier("words_punctuated")
 
-        tokenizer = self.tokenizer if not self.multilingual else careless_whisper_stream.tokenizer.get_tokenizer(True, language=item["lang"], task="transcribe")
+        tokenizer = self.tokenizer if not self.multilingual else whisper_rt.tokenizer.get_tokenizer(True, language=item["lang"], task="transcribe")
 
         endpoints = [0, 0, 0]
         tokens = []
@@ -175,7 +175,7 @@ class AlignedTextGridDataset(torch.utils.data.Dataset):
 class TIMIT(torch.utils.data.Dataset):
     def __init__(self, ds_path: str, tokenizer: Tokenizer = None, n_state: int = 384) -> None:
                 
-        self.tokenizer = tokenizer if tokenizer else careless_whisper_stream.tokenizer.get_tokenizer(True, language="en", task="transcribe")
+        self.tokenizer = tokenizer if tokenizer else whisper_rt.tokenizer.get_tokenizer(True, language="en", task="transcribe")
 
         with open(ds_path, 'rb') as file:
             self.dataset = pickle.load(file)
@@ -189,8 +189,8 @@ class TIMIT(torch.utils.data.Dataset):
         audio, sr, text, _, _ = self.dataset[index]
         audio_len = audio.shape[-1]
         assert sr == 16000
-        audio = careless_whisper_stream.pad_or_trim(torch.Tensor(audio).flatten())
-        mel = careless_whisper_stream.log_mel_spectrogram(audio)
+        audio = whisper_rt.pad_or_trim(torch.Tensor(audio).flatten())
+        mel = whisper_rt.log_mel_spectrogram(audio)
 
         text = [*self.tokenizer.sot_sequence_including_notimestamps] + self.tokenizer.encode(text)
         labels = text[1:] + [self.tokenizer.eot]
@@ -222,7 +222,7 @@ class AlignedTextGridDatasetLMDB(torch.utils.data.Dataset):
                  split='train'):
         super().__init__()
 
-        self.tokenizer = tokenizer if tokenizer else careless_whisper_stream.tokenizer.get_tokenizer(True, language="en", task="transcribe")
+        self.tokenizer = tokenizer if tokenizer else whisper_rt.tokenizer.get_tokenizer(True, language="en", task="transcribe")
         print("Reading ds")
         self.ds_df = pd.concat([pd.read_csv(path, sep=separator) for path in ds_path], ignore_index=True)
         print("finished Reading ds, its length: ", len(self.ds_df))
@@ -259,7 +259,7 @@ class AlignedTextGridDatasetLMDB(torch.utils.data.Dataset):
         if self.get_streamed_mel:
             spec_streamer = SpectrogramStream(n_mels=self.n_mels)
             return spec_streamer._simulate_streaming_log_spec(torch.tensor(audio))
-        return careless_whisper_stream.log_mel_spectrogram(audio)
+        return whisper_rt.log_mel_spectrogram(audio)
 
     def _get_intervals_from_wrd_file(self, path: str):
         with open(path, "r") as file:
@@ -275,7 +275,7 @@ class AlignedTextGridDatasetLMDB(torch.utils.data.Dataset):
         item = self.ds_df.iloc[index]
 
         # 1. Load Audio
-        audio = careless_whisper_stream.pad_or_trim(careless_whisper_stream.load_audio(item["wav_path"], sr=self.sr))
+        audio = whisper_rt.pad_or_trim(whisper_rt.load_audio(item["wav_path"], sr=self.sr))
         mel = self._calc_mel(audio)
         
         # 2. Load Intervals (Logic Check: LMDB vs File System)
@@ -305,7 +305,7 @@ class AlignedTextGridDatasetLMDB(torch.utils.data.Dataset):
                 text_intervals = tg.getTier("words") if path.suffix == '.TextGrid' else tg.getTier("words_punctuated")
 
         # 3. Process Tokens (Original Logic)
-        tokenizer = self.tokenizer if not self.multilingual else careless_whisper_stream.tokenizer.get_tokenizer(True, language=item["lang"], task="transcribe")
+        tokenizer = self.tokenizer if not self.multilingual else whisper_rt.tokenizer.get_tokenizer(True, language=item["lang"], task="transcribe")
 
         endpoints = [0, 0, 0]
         tokens = []

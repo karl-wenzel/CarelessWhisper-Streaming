@@ -3,15 +3,15 @@ sys.path.append("./")
 import torch
 import random
 import evaluate
-import careless_whisper_stream
-import careless_whisper_stream.tokenizer as whisper_tokenizer
+import whisper_rt
+import whisper_rt.tokenizer as whisper_tokenizer
 
 from torch import nn, Tensor
 from torch.optim.adamw import AdamW
 from training_code.utils import Config
-from careless_whisper_stream import StreamingWhisper
-from careless_whisper_stream.audio import HOP_LENGTH
-from careless_whisper_stream.normalizers import EnglishTextNormalizer
+from whisper_rt import StreamingWhisper
+from whisper_rt.audio import HOP_LENGTH
+from whisper_rt.normalizers import EnglishTextNormalizer
 from pytorch_lightning import LightningModule
 from torch.optim.lr_scheduler import LinearLR, ReduceLROnPlateau
 from training_code.collators import WhisperDataCollatorWithPadding, LoRAWhisperDataCollatorWithPadding
@@ -23,7 +23,7 @@ class WhisperCustomModel(LightningModule):
             self.save_hyperparameters()
             self.task = task
             self.lang = lang
-            self.model = careless_whisper_stream.load_model(model_name)
+            self.model = whisper_rt.load_model(model_name)
             self.tokenizer: whisper_tokenizer = whisper_tokenizer.get_tokenizer(True, language=lang)
 
             self.loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
@@ -150,7 +150,7 @@ class LoRAStreamedWhisper(WhisperCustomModel):
         # if model_name != "large-v2" and not eval_script:
         print(f"enc_emb_gran: {enc_emb_gran}")
         if not cfg.use_from_ft_ckpt:
-            self.model: StreamingWhisper = careless_whisper_stream.load_streaming_model_for_train(model_name, 
+            self.model: StreamingWhisper = whisper_rt.load_streaming_model_for_train(model_name, 
                                                                                     advisor_ckpt_path=None,
                                                                                     advisor_type=None,
                                                                                     rank=rank,
@@ -158,7 +158,7 @@ class LoRAStreamedWhisper(WhisperCustomModel):
                                                                                     extra_gran_blocks=enc_context,
                                                                                     )
         else:
-            self.model: StreamingWhisper = careless_whisper_stream.load_streaming_model(cfg.size, cfg.gran * 20)
+            self.model: StreamingWhisper = whisper_rt.load_streaming_model(cfg.size, cfg.gran * 20)
         
         for n, p in self.model.named_parameters():
             if "lora" not in n:

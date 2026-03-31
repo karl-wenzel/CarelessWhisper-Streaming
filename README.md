@@ -1,5 +1,5 @@
-# CarelessWhisper - Causal Whisper Streaming Model
-Causal Whisper Streaming is a fine tuned version of OpenAI Whisper, which can handle causal data and perform real-time transcription. 
+# WhisperRT - Causal Whisper Streaming Model
+WhisperRT Streaming is a fine tuned version of OpenAI Whisper, which can handle causal data and perform real-time transcription. 
 
 [![arXiv](https://img.shields.io/badge/arXiv-2508.12301-b31b1b.svg)](https://arxiv.org/abs/2508.12301)  [![Demo on Hugging Face](https://img.shields.io/badge/🤗%20Demo-Hugging%20Face-blueviolet?logo=huggingface&logoColor=white)](https://huggingface.co/spaces/MLSpeech/CarelessWhisper-causal-streaming)
 
@@ -15,8 +15,8 @@ To set up the project environment using `conda`, follow these steps:
 
 1. **Clone the repository**  
    ```bash
-   git clone https://github.com/tomer9080/CarelessWhisper-streaming
-   cd CarelessWhisper-streaming
+   git clone https://github.com/tomer9080/WhisperRT-streaming
+   cd WhisperRT-streaming
    ```
 
 > 💡 Make sure you have [Miniconda](https://docs.conda.io/en/latest/miniconda.html) or [Anaconda](https://www.anaconda.com/products/distribution) installed before proceeding.
@@ -28,12 +28,16 @@ To set up the project environment using `conda`, follow these steps:
 
 3. **Activate The environment**
     ```bash
-    conda activate careless_whisper
+    conda activate whisper_rt
     ```
 
 4. **Install the appropriate PyTorch version**  
    Depending on your hardware and CUDA version, install PyTorch by following the instructions at [https://pytorch.org/get-started/locally](https://pytorch.org/get-started/locally).  
    This project was tested with CUDA 12.4, but it should also work with compatible earlier or later versions.
+   You can use the next command to install torch as it was used during the process of building this project:
+   ```bash
+   pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+   ```
  
 After installing all of the dependencies, you can try to run inference.
 
@@ -107,14 +111,14 @@ If you prefer using python, a code sinppet utilizing a microphone or a wav file 
 
 ```python
 import torch
-import careless_whisper_stream
+import whisper_rt
 
 model_size = "small" # model size
 chunk_size = 300 # chunk size in milliseconds
 multilingual = False # currently on large-v2_300msec supports other languages than english.
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-model = careless_whisper_stream.load_streaming_model(name=model_size,
+model = whisper_rt.load_streaming_model(name=model_size,
                                                    gran=chunk_size,
                                                    multilingual=multilingual,
                                                    device=device)
