@@ -33,6 +33,7 @@ def _resolve_checkpoint_path(model_run_name: str, checkpoint: int | None) -> Pat
 
     Accepted filename style ONLY:
     - checkpoint-epoch=XXXX.ckpt
+    - checkpoint-epoch=-001.ckpt
 
     Rules:
     - if --checkpoint N is given -> use checkpoint-epoch=XXXX.ckpt
@@ -47,7 +48,7 @@ def _resolve_checkpoint_path(model_run_name: str, checkpoint: int | None) -> Pat
 
     ckpt_files = [
         p for p in checkpoint_dir.iterdir()
-        if p.is_file() and re.fullmatch(r"checkpoint-epoch=-?\d{4}\.ckpt", p.name)
+        if p.is_file() and re.fullmatch(r"checkpoint-epoch=-?\d+\.ckpt", p.name)
     ]
 
     if not ckpt_files:
@@ -55,7 +56,6 @@ def _resolve_checkpoint_path(model_run_name: str, checkpoint: int | None) -> Pat
             f"No valid checkpoint files found in: {checkpoint_dir}"
         )
 
-    # --- Explicit checkpoint requested ---
     if checkpoint is not None:
         target = checkpoint_dir / f"checkpoint-epoch={checkpoint:04d}.ckpt"
 
@@ -69,7 +69,6 @@ def _resolve_checkpoint_path(model_run_name: str, checkpoint: int | None) -> Pat
             f"Available epochs: {available_epochs}"
         )
 
-    # --- Try Lightning best checkpoint ---
     for ckpt_path in sorted(ckpt_files):
         try:
             ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
@@ -82,7 +81,6 @@ def _resolve_checkpoint_path(model_run_name: str, checkpoint: int | None) -> Pat
         except Exception:
             pass
 
-    # --- Fallback: latest epoch ---
     return max(ckpt_files, key=_extract_epoch_from_name)
 
 
