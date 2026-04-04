@@ -16,30 +16,30 @@ This file defines a Python dictionary named `ds_paths`, where you should specify
 
 ds_paths = {
     'LIBRI-960-ALIGNED': {
-        'train': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/train-960.csv",
-        'val': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/dev.csv",
-        'test': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/test.csv",
-        'test-clean': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/test-clean.csv",
-        'test-other': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/test-other.csv",
+        'train': "/mtec/local/LibriSpeech_aligned/csvs/train-960.csv",
+        'val': "/mtec/local/LibriSpeech_aligned/csvs/dev.csv",
+        'test': "/mtec/local/LibriSpeech_aligned/csvs/test.csv",
+        'test-clean': "/mtec/local/LibriSpeech_aligned/csvs/test-clean.csv",
+        'test-other': "/mtec/local/LibriSpeech_aligned/csvs/test-other.csv",
 
         'precomputed': {
-            'train': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/precomputed/train-960/manifest.csv",
-            'val': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/precomputed/dev/manifest.csv",
-            'test': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/precomputed/test/manifest.csv",
-            'test-clean': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/precomputed/test-clean/manifest.csv",
-            'test-other': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/precomputed/test-other/manifest.csv",
+            'train': "/mtec/local/LibriSpeech_aligned/precomputed/train-960/manifest.csv",
+            'val': "/mtec/local/LibriSpeech_aligned/precomputed/dev/manifest.csv",
+            'test': "/mtec/local/LibriSpeech_aligned/precomputed/test/manifest.csv",
+            'test-clean': "/mtec/local/LibriSpeech_aligned/precomputed/test-clean/manifest.csv",
+            'test-other': "/mtec/local/LibriSpeech_aligned/precomputed/test-other/manifest.csv",
         },
     },
 
     'LIBRI-100-CLEAN-ALIGNED': {
-        'train': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/train-clean-100.csv",
-        'val': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/dev-clean.csv",
-        'test': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/csvs/test-clean.csv",
+        'train': "/mtec/local/LibriSpeech_aligned/csvs/train-clean-100.csv",
+        'val': "/mtec/local/LibriSpeech_aligned/csvs/dev-clean.csv",
+        'test': "/mtec/local/LibriSpeech_aligned/csvs/test-clean.csv",
 
         'precomputed': {
-            'train': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/precomputed/train-clean-100/manifest.csv",
-            'val': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/precomputed/dev-clean/manifest.csv",
-            'test': f"{os.environ.get('HOME')}/ma/datasets/LibriSpeech/precomputed/test-clean/manifest.csv",
+            'train': "/mtec/local/LibriSpeech_aligned/precomputed/train-clean-100/manifest.csv",
+            'val': "/mtec/local/LibriSpeech_aligned/precomputed/dev-clean/manifest.csv",
+            'test': "/mtec/local/LibriSpeech_aligned/precomputed/test-clean/manifest.csv",
         },
     },
 }
