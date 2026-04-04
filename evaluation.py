@@ -137,6 +137,8 @@ def evaluate():
     parser.add_argument("--beam_size", type=int, default=5, help="Beam size during inference.")
     parser.add_argument("-flush_last_frame", action="store_true", help="Calculates last frame with final spectogram and streaming mode off")
     parser.add_argument("-pad_last_frame", action="store_true", help="Pads the last frame")
+    parser.add_argument("-sa_kv_cache", action="store_true", help="Use self-attention KV cache")
+    parser.add_argument("-ca_kv_cache", action="store_true", help="Use cross-attention KV cache")
     parser.add_argument("-verbose", action="store_true", help="Prints additional info while evaluating")
 
     # Dataset Setup
@@ -204,6 +206,8 @@ def evaluate():
             language="en" if not args.multilingual else "auto",
             beam_size=args.beam_size,
             temperature=0,
+            ca_kv_cache=args.ca_kv_cache,
+            sa_kv_cache=args.sa_kv_cache,
             flush_last_frame=args.flush_last_frame,
             pad_last_frame=args.pad_last_frame,
             verbose=False
