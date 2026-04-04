@@ -2,11 +2,24 @@ import torch
 import pickle
 import pandas as pd
 import careless_whisper_stream
+from pathlib import Path
 import careless_whisper_stream.tokenizer
 from praatio import textgrid
 from dataclasses import dataclass
 from careless_whisper_stream.tokenizer import Tokenizer
 from careless_whisper_stream.audio import SpectrogramStream
+
+def _resolve_csv_relative_path(csv_path: str, value):
+    if pd.isna(value):
+        return value
+
+    value = str(value)
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return str(path)
+
+    return str((Path(csv_path).resolve().parent / path).resolve())
+
 
 class WAVsDataset(torch.utils.data.Dataset):
     def __init__(self, ds_path: str, 
@@ -19,6 +32,7 @@ class WAVsDataset(torch.utils.data.Dataset):
 
         if not no_labels:
             self.tokenizer = tokenizer if tokenizer else careless_whisper_stream.tokenizer.get_tokenizer(True, language="en", task="transcribe")
+        self.ds_path = ds_path
         self.ds_df = pd.read_csv(ds_path, sep=sep)
         self.sr = 16_000
         self.no_labels = no_labels
@@ -38,7 +52,8 @@ class WAVsDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         item = self.ds_df.iloc[idx]
 
-        audio = careless_whisper_stream.load_audio(item["wav_path"], sr=self.sr)
+        wav_path = _resolve_csv_relative_path(self.ds_path, item["wav_path"])
+        audio = careless_whisper_stream.load_audio(wav_path, sr=self.sr)
         audio = careless_whisper_stream.pad_or_trim(audio.flatten())
         mel = self._calc_mel(audio)
         
@@ -71,6 +86,7 @@ class AlignedTextGridDataset(torch.utils.data.Dataset):
         super().__init__()
 
         self.tokenizer = tokenizer if tokenizer else careless_whisper_stream.tokenizer.get_tokenizer(True, language="en", task="transcribe")
+        self.ds_path = ds_path
         self.ds_df = pd.read_csv(ds_path)
         self.sr = sample_rate
         self.custom_len = custom_len
@@ -104,13 +120,16 @@ class AlignedTextGridDataset(torch.utils.data.Dataset):
     def __getitem__(self, index):
         item = self.ds_df.iloc[index]
 
-        audio = careless_whisper_stream.pad_or_trim(careless_whisper_stream.load_audio(item["wav_path"], sr=self.sr))
+        wav_path = _resolve_csv_relative_path(self.ds_path, item["wav_path"])
+        audio = careless_whisper_stream.pad_or_trim(careless_whisper_stream.load_audio(wav_path, sr=self.sr))
         mel = self._calc_mel(audio)
         
-        if ".wrd" in item["tg_path"]:
-            text_intervals = self._get_intervals_from_wrd_file(item["tg_path"])            
+        tg_path = _resolve_csv_relative_path(self.ds_path, item["tg_path"])
+
+        if ".wrd" in tg_path:
+            text_intervals = self._get_intervals_from_wrd_file(tg_path)            
         else:
-            tg = textgrid.openTextgrid(item["tg_path"], includeEmptyIntervals=False)
+            tg = textgrid.openTextgrid(tg_path, includeEmptyIntervals=False)
             text_intervals = tg.getTier("words")
 
         tokenizer = self.tokenizer if not self.multilingual else careless_whisper_stream.tokenizer.get_tokenizer(True, language=item["lang"], task="transcribe")
@@ -171,6 +190,7 @@ class TIMIT(torch.utils.data.Dataset):
 
 class PrecomputedAlignedDataset(torch.utils.data.Dataset):
     def __init__(self, manifest_path: str, custom_len: int = 0):
+        self.manifest_path = manifest_path
         self.df = pd.read_csv(manifest_path)
         self.custom_len = custom_len
 
@@ -181,7 +201,8 @@ class PrecomputedAlignedDataset(torch.utils.data.Dataset):
         return int(self.custom_len) if 0 < self.custom_len < len(self.paths) else len(self.paths)
 
     def __getitem__(self, index):
-        item = torch.load(self.paths[index], map_location="cpu")
+        pt_path = _resolve_csv_relative_path(self.manifest_path, self.paths[index])
+        item = torch.load(pt_path, map_location="cpu")
         return {
             "input_ids": item["input_ids"],
             "dec_input_ids": item["dec_input_ids"],
