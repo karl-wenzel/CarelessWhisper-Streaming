@@ -8,7 +8,6 @@ sys.path.append(str(ROOT))
 
 import argparse
 import os
-from pathlib import Path
 from dataclasses import dataclass
 
 import pandas as pd
@@ -99,16 +98,32 @@ def build_tokens_and_endpoints(
     return text, endpoints, labels
 
 
+def resolve_csv_relative_path(csv_path: str, value: str) -> str:
+    value = str(value)
+    if os.path.isabs(value):
+        return value
+    return os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(csv_path)), value))
+
+
+def maybe_make_manifest_path(path: Path, manifest_path: Path, global_paths: bool) -> str:
+    path = path.resolve()
+    manifest_path = manifest_path.resolve()
+    if global_paths:
+        return str(path)
+    return os.path.relpath(path, manifest_path.parent)
+
+
 def process_row(
     row,
+    csv_path: str,
     sample_rate: int,
     get_streamed_mel: bool,
     n_mels: int,
     multilingual: bool,
     spec_streamer: SpectrogramStream | None,
 ):
-    wav_path = row.wav_path
-    tg_path = row.tg_path
+    wav_path = resolve_csv_relative_path(csv_path, row.wav_path)
+    tg_path = resolve_csv_relative_path(csv_path, row.tg_path)
     lang = row.lang if hasattr(row, "lang") and pd.notna(row.lang) else "en"
 
     tokenizer = get_tokenizer_cached(multilingual=multilingual, lang=lang)
@@ -141,11 +156,13 @@ def main():
     parser.add_argument("--get_streamed_mel", action="store_true")
     parser.add_argument("--multilingual", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--global_paths", action="store_true", help="If set, store absolute pt_path values in manifest.csv. Default: store paths relative to manifest location.",)
     args = parser.parse_args()
 
     out_dir = Path(args.out_dir)
     samples_dir = out_dir / "samples"
     samples_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = out_dir / "manifest.csv"
 
     df = pd.read_csv(args.csv)
     spec_streamer = SpectrogramStream(n_mels=args.n_mels) if args.get_streamed_mel else None
@@ -161,17 +178,20 @@ def main():
         dynamic_ncols=True
     )
 
-
     for idx, row in enumerate(df.itertuples(index=False)):
         out_path = samples_dir / f"{idx:08d}.pt"
 
         if out_path.exists() and not args.overwrite:
-            manifest_rows.append({"index": idx, "pt_path": str(out_path)})
+            manifest_rows.append({
+                "index": idx,
+                "pt_path": maybe_make_manifest_path(out_path, manifest_path, args.global_paths),
+            })
             pbar.update(1)
             continue
 
         item = process_row(
             row=row,
+            csv_path=args.csv,
             sample_rate=args.sample_rate,
             get_streamed_mel=args.get_streamed_mel,
             n_mels=args.n_mels,
@@ -181,11 +201,13 @@ def main():
 
         torch.save(item, out_path)
 
-        manifest_rows.append({"index": idx, "pt_path": str(out_path)})
+        manifest_rows.append({
+            "index": idx,
+            "pt_path": maybe_make_manifest_path(out_path, manifest_path, args.global_paths),
+        })
 
-        # update progress bar
         pbar.set_postfix({
-            "last": Path(row.wav_path).name
+            "last": Path(resolve_csv_relative_path(args.csv, row.wav_path)).name
         })
         pbar.update(1)
 
@@ -196,9 +218,9 @@ def main():
     print(f"Avg speed: {len(df)/elapsed:.2f} samples/sec")
 
     manifest = pd.DataFrame(manifest_rows)
-    manifest.to_csv(out_dir / "manifest.csv", index=False)
+    manifest.to_csv(manifest_path, index=False)
     print(f"Done. Wrote {len(manifest)} items to {samples_dir}")
-    print(f"Manifest: {out_dir / 'manifest.csv'}")
+    print(f"Manifest: {manifest_path}")
 
 
 if __name__ == "__main__":

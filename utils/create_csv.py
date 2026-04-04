@@ -8,7 +8,7 @@ Usage:
         --dataset_root /path/to/LibriSpeech/train-clean-100 \
         --align_root /path/to/train-clean-100-aligned \
         --output_dir /path/to/output/csvs \
-        [--split]
+        [--split] [--global_paths]
 """
 
 import os
@@ -28,6 +28,8 @@ parser.add_argument("--train_ratio", type=float, default=0.8, help="Training spl
 parser.add_argument("--val_ratio", type=float, default=0.1, help="Validation split ratio")
 parser.add_argument("--test_ratio", type=float, default=0.1, help="Test split ratio")
 parser.add_argument("--seed", type=int, default=42, help="Random seed")
+parser.add_argument("--global_paths", action="store_true", help="If set, store absolute paths in CSV. Default: store paths relative to CSV location.")
+
 args = parser.parse_args()
 
 os.makedirs(args.output_dir, exist_ok=True)
@@ -39,7 +41,7 @@ entries = []
 AUDIO_EXTENSIONS = (".wav", ".flac")
 
 for root, _, files in os.walk(args.dataset_root):
-    # 1. First, find and load any transcriptions in this folder
+    # 1. Load transcriptions
     transcriptions = {}
     for file in files:
         if file.endswith(".trans.txt"):
@@ -51,25 +53,23 @@ for root, _, files in os.walk(args.dataset_root):
                         file_id, text = parts
                         transcriptions[file_id] = text
 
-    # 2. Then, process the audio files
+    # 2. Process audio files
     for file in files:
         if file.endswith(AUDIO_EXTENSIONS):
             audio_path = os.path.join(root, file)
             file_id = os.path.splitext(file)[0]
-            
-            # Compute relative path to maintain structure
+
             rel_path = os.path.relpath(audio_path, args.dataset_root)
-            # Corresponding TextGrid path
-            textgrid_path = os.path.join(args.align_root, os.path.splitext(rel_path)[0] + ".TextGrid")
-            
+            textgrid_path = os.path.join(
+                args.align_root,
+                os.path.splitext(rel_path)[0] + ".TextGrid"
+            )
+
             if os.path.exists(textgrid_path):
-                # Look up the actual text using the file ID
                 raw_text = transcriptions.get(file_id, "")
-                
                 if raw_text == "":
                     print(f"Warning: No transcript found for {file_id} in {root}")
-                    # You can choose to skip here using `continue` if you want to be strict
-                
+
                 entries.append((audio_path, textgrid_path, raw_text))
             else:
                 print(f"Skipping {audio_path}: missing TextGrid")
@@ -85,6 +85,15 @@ random.seed(args.seed)
 random.shuffle(entries)
 
 # -----------------------------
+# Helper to maybe relativize paths
+# -----------------------------
+def maybe_make_local(path, csv_path):
+    if args.global_paths:
+        return path
+    base_dir = os.path.dirname(csv_path)
+    return os.path.relpath(path, base_dir)
+
+# -----------------------------
 # Helper to write CSV
 # -----------------------------
 def write_csv(file_path, data):
@@ -92,7 +101,9 @@ def write_csv(file_path, data):
         writer = csv.writer(f)
         writer.writerow(["wav_path", "tg_path", "raw_text"])
         for audio, tg, txt in data:
-            writer.writerow([audio, tg, txt])
+            audio_out = maybe_make_local(audio, file_path)
+            tg_out = maybe_make_local(tg, file_path)
+            writer.writerow([audio_out, tg_out, txt])
 
 # -----------------------------
 # Determine dataset name
