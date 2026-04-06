@@ -84,6 +84,13 @@ def _resolve_checkpoint_path(model_run_name: str, checkpoint: int | None) -> Pat
     return max(ckpt_files, key=_extract_epoch_from_name)
 
 
+def _resolve_csv_relative_path(csv_path: str, value: str) -> str:
+    value = str(value)
+    if os.path.isabs(value):
+        return value
+    return os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(csv_path)), value))
+
+
 def extract_words_and_times_from_tg(tg_path):
     """Reconstructs the transcript and timestamps from a TextGrid using praatio."""
     try:
@@ -189,8 +196,8 @@ def evaluate():
     # 3. Inference Loop
     print(f"Starting evaluation on {len(df)} samples...")
     for _, row in tqdm(df.iterrows(), total=len(df)):
-        wav_path = row["wav_path"]
-        tg_path = row["tg_path"]
+        wav_path = _resolve_csv_relative_path(csv_path, row["wav_path"])
+        tg_path = _resolve_csv_relative_path(csv_path, row["tg_path"])
 
         audio_duration = librosa.get_duration(path=wav_path)
         total_audio_duration_sec += audio_duration
