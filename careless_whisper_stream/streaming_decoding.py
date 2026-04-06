@@ -876,6 +876,13 @@ class DecodingTask:
 
         return tuple(tokens)
 
+    def _refresh_initial_token_state(self):
+        self.initial_tokens = self._get_initial_tokens()
+        self.sample_begin = len(self.initial_tokens)
+        self.sot_index = self.initial_tokens.index(self.tokenizer.sot)
+        if hasattr(self, "inference") and self.inference is not None:
+            self.inference.initial_token_length = len(self.initial_tokens)
+
     def _get_suppress_tokens(self) -> Tuple[int]:
         suppress_tokens = self.options.suppress_tokens
 
@@ -963,6 +970,7 @@ class DecodingTask:
         is_first_frame = self.index == (self.options.gran * (1 + self.options.look_ahead_blocks))
         self._set_ca_kv_cache(True)
         beam_indices = None
+        logits = None
 
         try:
             for i in range(self.sample_len // 8):
@@ -1013,7 +1021,7 @@ class DecodingTask:
                 if is_first_frame and self.options.streaming_timestamps and self.options.force_first_tokens_timestamps:
                     self.decoder._insert_timestamps(audio_features, self.tokens, self.options.gran)
                 
-                if self.tokens.shape[1] > logits.shape[1]:
+                if logits is not None and self.tokens.shape[1] > logits.shape[1]:
                     self.tokens = self.tokens[:, :logits.shape[1]]
                 
                 self.decoder.reset()
@@ -1057,14 +1065,32 @@ class DecodingTask:
         print("Reset context...")
         num_old_mels = (self.options.gran * (self.options.look_ahead_blocks) * 2) + 2 if self.options.look_ahead_blocks > 0 else (self.options.gran * 2) + 2
         self.mel = torch.cat([self.mel[..., -num_old_mels:], new_mel_frame], dim=-1)
+
+        # Carry a short prefix into the fresh decoding window.
         self.options.prefix = self.tokens[:, len(self.sot_sequence):].tolist()[0][-self.options.n_tokens_look_back-1:]
         print(f"Modifying tokens! {self.options.prefix=}")
-        self.initial_tokens = self._get_initial_tokens()
+
+        self._refresh_initial_token_state()
         print("Modified tokens!")
-        self.tokens = torch.tensor([list(self.initial_tokens)]) # no need to use repeat, batch is meaningless in stream.
+
+        self.tokens = torch.tensor([list(self.initial_tokens)])
         self.tokens = self.tokens.repeat_interleave(self.n_group, dim=0).to(self.model.device)
+
+        # clear caches and derived state so the
+        # next pass behaves like a fresh first frame with a carried prefix.
         self._caching_inner_reset()
         self.audio_features = torch.zeros((1, self.model.dims.n_audio_ctx, self.model.dims.n_audio_state)).to(self.model.device)
+        self.index = self.options.gran * (1 + self.options.look_ahead_blocks)
+        self.frame_counter = 1
+        self.sum_logprobs = torch.zeros(self.n_group, device=self.model.device)
+        self.no_speech_probs = [np.nan] * self.n_group
+
+        if hasattr(self.decoder, "last_logits"):
+            self.decoder.last_logits = None
+        if hasattr(self.decoder, "finished_sequences"):
+            self.decoder.finished_sequences = {} if isinstance(getattr(self.decoder, "finished_sequences"), dict) else None
+        self.decoder.reset()
+
         print("Finished reset...")
 
     @torch.no_grad()
