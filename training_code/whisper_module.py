@@ -240,39 +240,45 @@ class LoRAStreamedWhisper(WhisperCustomModel):
         dec_input_ids = batch["dec_input_ids"].long()
         endpoints = batch["endpoints"]
 
-        sample_points = self._get_sample_points(endpoints)
-
-        optimizer = None
         if step == "train":
             optimizer = self.optimizers()
-            optimizer.zero_grad()
 
-        total_loss = 0.0
-        last_out = None
-
+        # forward
+        sample_points = self._get_sample_points(endpoints)
         for i in sample_points:
-            audio_features = self.model.encoder(
-                input_ids[..., :(i + 1) * (self.enc_emb_gran * 2)],
-                index=[0, (i + 1) * self.enc_emb_gran],
-                mask=True
-            )
+            audio_features = self.model.encoder(input_ids[..., :(i + 1) * (self.enc_emb_gran * 2)], index=[0, (i + 1) * self.enc_emb_gran], mask=True)
             out = self.model.decoder(dec_input_ids, audio_features, dump_type="None")
-            last_out = out
 
-            frame_labels = self._calc_labels(labels, endpoints, i)
-            loss = self.loss_fn(out.view(-1, out.size(-1)), frame_labels.view(-1))
+            if batch_id == 0 and self.current_epoch == 0:
+                logits = out[0]
+                pred_ids = logits.argmax(dim=-1).detach().cpu().tolist()
 
-            scaled_loss = loss / len(sample_points)
-            total_loss += scaled_loss.detach()
+                try:
+                    pred_text = self.tokenizer.decode(pred_ids)
+                    print("PREDICTION:", pred_text)
+                except:
+                    pass
 
             if step == "train":
-                self.manual_backward(scaled_loss)
+                optimizer.zero_grad()
 
-        if step == "train":
-            torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
-            optimizer.step()
+            # loss calc
+            frame_labels = self._calc_labels(labels, endpoints, i)
 
-        return {"out": last_out, "loss": total_loss}
+            if batch_id == 0 and self.current_epoch == 0:
+                try:
+                    print("CALC LABELS:", frame_labels.view(-1))
+                except:
+                    pass
+
+            loss = self.loss_fn(out.view(-1, out.size(-1)), frame_labels.view(-1))
+
+            # optimizer step if relevant.
+            if step == "train":
+                loss.backward()
+                optimizer.step() # might move optimizer step to out of the loop for faster training
+
+        return {"out": out, "loss": loss}
 
     def _forward_step(self, batch, step):
         input_ids = batch["input_ids"]
