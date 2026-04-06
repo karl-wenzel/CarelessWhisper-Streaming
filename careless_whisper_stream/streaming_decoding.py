@@ -135,15 +135,18 @@ class PyTorchInference(Inference):
         if not self.kv_cache and self.use_kv_cache:
             self.kv_cache, self.hooks = self.model.install_decoder_kv_cache_hooks()
         
+        if self.use_kv_cache and self.use_beam and "beam_indices" in self.kv_cache:
+            del self.kv_cache["beam_indices"]
+
         if tokens.shape[-1] > self.initial_token_length and self.use_kv_cache:
             # only need to use the last token except in the first forward pass
             if not self.use_beam:
                 tokens = tokens[:, -self.n_tokens_look_back:] if first_prediction else tokens[:, -1:]
             else:
                 n_beams = tokens.shape[0]
-                self.kv_cache["beam_indices"] = beam_indices # an elegant way to send it to decoder ? 
-                tokens = tokens[beam_indices[0], beam_indices[1]].view(n_beams, -1)
-                
+                if beam_indices is not None:
+                    self.kv_cache["beam_indices"] = beam_indices # an elegant way to send it to decoder ? 
+                    tokens = tokens[beam_indices[0], beam_indices[1]].view(n_beams, -1)
 
         return self._concat_logits_if_needed(self.model.decoder(tokens, audio_features, kv_cache=self.kv_cache))
 

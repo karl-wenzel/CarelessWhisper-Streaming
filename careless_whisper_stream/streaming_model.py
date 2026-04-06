@@ -106,11 +106,19 @@ class LoRAMultiHeadAttention(LightningModule):
         # apply causal mask
         if mask is not None:
             
+            beam_indices = kv_cache.get("beam_indices") if kv_cache is not None else None
+            beam_mask_ok = (
+                beam_indices is not None
+                and len(beam_indices) == 3
+                and len(beam_indices[1]) >= n_batch * n_ctx
+            )
+
             # kv_cache for beam search decoding case
-            if kv_cache is not None and "beam_indices" in kv_cache.keys():
+            if beam_mask_ok:
                 for i in range(n_batch):
-                    qk[i] = qk[i] + mask[kv_cache["beam_indices"][1][i * n_ctx]:kv_cache["beam_indices"][1][i * n_ctx] + n_ctx, :k_ctx]
-            
+                    start = beam_indices[1][i * n_ctx]
+                    qk[i] = qk[i] + mask[start:start + n_ctx, :k_ctx]
+
             # For training, encoder/decoder causal masks
             elif k_ctx == n_ctx:
                 qk = qk + mask[:n_ctx, :n_ctx]
@@ -217,29 +225,11 @@ class StreamingTextDecoder(TextDecoder):
         xa : torch.Tensor, shape = (batch_size, n_audio_ctx, n_audio_state)
             the encoded audio features to be attended on
         """
-        token_emb = self.token_embedding(x)
-
-        beam_indices = kv_cache.get("beam_indices") if kv_cache is not None else None
-        expected_positions = x.shape[0] * x.shape[1]
-
-        if (
-            beam_indices is not None
-            and len(beam_indices) == 3
-            and len(beam_indices[0]) == expected_positions
-            and len(beam_indices[1]) == expected_positions
-        ):
-            pos = self.positional_embedding.unsqueeze(0).expand(
-                x.shape[0],
-                self.positional_embedding.shape[0],
-                self.positional_embedding.shape[1],
-            )[beam_indices[0], beam_indices[1]].view(x.shape[0], -1, self.n_state)
-            x = token_emb + pos
+        if kv_cache is not None and "beam_indices" in kv_cache.keys():
+            x = self.token_embedding(x) + self.positional_embedding.unsqueeze(0).expand(x.shape[0], self.positional_embedding.shape[0], self.positional_embedding.shape[1])[kv_cache["beam_indices"][0], kv_cache["beam_indices"][1]].view(x.shape[0], -1, self.n_state)
         else:
-            offset = 0
-            if kv_cache:
-                cache_tensors = [v for k, v in kv_cache.items() if k != "beam_indices"]
-                offset = cache_tensors[0].shape[1] if cache_tensors else 0
-            x = token_emb + self.positional_embedding[offset : offset + x.shape[-1]]
+            offset = next(iter(kv_cache.values())).shape[1] if kv_cache else 0
+            x = self.token_embedding(x) + self.positional_embedding[offset : offset + x.shape[-1]]
         
         x = x.to(xa.dtype)
 
