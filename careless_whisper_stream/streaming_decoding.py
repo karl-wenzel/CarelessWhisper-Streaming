@@ -160,6 +160,10 @@ class PyTorchInference(Inference):
             return self.cached_logits
 
         # beam kv_cache
+        if "beam_indices" not in self.kv_cache:
+            self.cached_logits = torch.cat([self.cached_logits, logits], dim=1)
+            return self.cached_logits
+
         n_beams, n_ctx, n_vocab = logits.shape
         
         for i, (beam, index, output_index) in enumerate(zip(*self.kv_cache["beam_indices"])):
@@ -181,6 +185,7 @@ class PyTorchInference(Inference):
         del self.hooks
         self.kv_cache = {}
         self.hooks = []
+        self.cached_logits = None
 
     def flush_tokens_from_cache(self):
         for key in self.kv_cache.keys():
