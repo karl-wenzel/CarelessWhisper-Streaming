@@ -275,7 +275,7 @@ class LoRAStreamedWhisper(WhisperCustomModel):
 
             # optimizer step if relevant.
             if step == "train":
-                loss.backward()
+                loss.manual_backward()
                 optimizer.step() # might move optimizer step to out of the loop for faster training
 
         return {"out": out, "loss": loss}
