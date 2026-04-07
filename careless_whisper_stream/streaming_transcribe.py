@@ -48,8 +48,6 @@ def transcribe(
     max_sec_context: int = 30,
     streaming_timestamps: bool = False,
     force_first_tokens_timestamps: bool = False,
-    flush_last_frame: bool = False,
-    pad_last_frame: bool = False,
     verbose: bool = True,
     **kwargs
 ) -> List[str]:
@@ -141,15 +139,8 @@ def transcribe(
 
             chunk_start_time = time.perf_counter()
             
-            # 1. Pass is_last to ensure STFT pads the end of the audio correctly
-            mel_frame = streamed_spectrogram.calc_mel_with_new_frame(
-                frame_tensor.to(model.device, non_blocking=True), 
-                is_last=is_last if pad_last_frame else False,
-                expected_n_frames=(model.encoder.gran * 2) if is_last else None
-            )
+            mel_frame = streamed_spectrogram.calc_mel_with_new_frame(frame_tensor.to(model.device, non_blocking=True), )
 
-            last_mel = mel_frame # Store for the final "flush" decode
-            
             # decode given the new mel frame and print results
             result = model.decode(mel_frame.squeeze(0), decoding_options)
             
@@ -165,24 +156,6 @@ def transcribe(
             if is_last:
                 break
             frame = next_frame
-        
-        # 2. Final "Flush" decode
-        if (flush_last_frame):
-            model.eval()
-            with torch.no_grad():
-                # Disable stream_decode for the very last chunk to finalize the sentence.
-                decoding_options.stream_decode = False 
-                if last_mel is not None:
-                    # Use the mel generated in the last loop iteration
-                    flush_start_time = time.perf_counter()
-                    
-                    result = model.decode(last_mel.squeeze(0), decoding_options)
-                    
-                    flush_end_time = time.perf_counter()
-                    flush_latency = flush_end_time - flush_start_time
-                    
-                    wrapped_result = ChunkResultWrapper(result, flush_latency)
-                    texts.append(wrapped_result)
 
     except KeyboardInterrupt:
         stream_instance.close_stream(frames)

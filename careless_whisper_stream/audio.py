@@ -323,7 +323,7 @@ class SpectrogramStream:
         self.audio_ctx = torch.tensor([])
         self.log_spec_max = -torch.inf
 
-    def calc_mel_with_new_frame(self, audio_frame: torch.Tensor, is_last: bool = False, expected_n_frames: int = None):
+    def calc_mel_with_new_frame(self, audio_frame: torch.Tensor, expected_n_frames: int = None):
         
         self.window = self.window.to(audio_frame.device)
         
@@ -342,10 +342,6 @@ class SpectrogramStream:
             self.is_first = False
         else: # pad with previous context
             audio_input = torch.cat([self.audio_ctx[..., -self.ctx_samples:], audio_frame], dim=-1)
-        
-        if is_last: # pad reflect last frame
-            pad = int(self.n_fft // 4) + 1
-            audio_input = F.pad(audio_input, [pad, 0], self.pad_mode)
 
         self.audio_ctx = audio_frame # now audio ctx is the last frame
 
