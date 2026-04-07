@@ -235,12 +235,15 @@ class LoRAStreamedWhisper(WhisperCustomModel):
         return sorted(sample_points)
 
     def _forward_step_stream(self, batch, batch_id, step):
-        input_ids = batch["input_ids"]
-        labels = batch["labels"].long()
-        dec_input_ids = batch["dec_input_ids"].long()
-        endpoints = batch["endpoints"]
+        input_ids = batch["input_ids"] # input ids are the audio features
+        labels = batch["labels"].long() # target tokens
+        dec_input_ids = batch["dec_input_ids"].long() # target tokens shifted right for teacher-forcing
+        endpoints = batch["endpoints"] # token end time stamps
 
-        sample_points = self._get_sample_points(endpoints)
+        # samples from [0...n] according to streaming fraction
+        # n is the index of the last chunk still containing tokens (is determined from endpoints)
+        # result is something like [1,5,6,8,9] if n=10 and streaming_fraction is 0.5
+        sample_points = self._get_sample_points(endpoints) 
 
         optimizer = None
         if step == "train":
