@@ -174,6 +174,8 @@ class StreamingAudioEncoder(AudioEncoder):
     def forward(self, x: Tensor, index: list = [0, 1500], kv_cache = None, mask = True):
         """
         simulate streaming forward using qk cache self attn.
+
+        mask: uses mask if tensor, otherwise use self.mask
         """
         x = F.gelu(self.conv1(x))
         x = F.gelu(self.conv2(x))
@@ -188,7 +190,13 @@ class StreamingAudioEncoder(AudioEncoder):
             x = (x + self.positional_embedding[index[0]:index[1]]).to(x.dtype)
 
         for block in self.blocks:
-            chosen_mask = mask[..., :index[1], :index[1]] if isinstance(mask, Tensor) else self.mask if (mask is not None) and (self.use_stream) else None 
+            if isinstance(mask, Tensor):
+                chosen_mask = mask[..., :index[1], :index[1]]
+            elif mask:
+                chosen_mask = self.mask[..., :index[1], :index[1]]
+            else:
+                chosen_mask = None
+                
             x = block(x, mask=chosen_mask, kv_cache=kv_cache)
             
         x = self.ln_post(x)
