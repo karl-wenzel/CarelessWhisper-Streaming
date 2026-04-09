@@ -160,6 +160,8 @@ def evaluate():
         checkpoint_obj = torch.load(ckpt_path, map_location="cpu", weights_only=False)
         hparams = checkpoint_obj.get("hyper_parameters", checkpoint_obj.get("cfg", {}))
         base_model_name = hparams.get("size", args.model)
+    else:
+        ckpt_path = None
 
     # 1. Load Model
     model = load_streaming_model(
@@ -257,8 +259,8 @@ def evaluate():
 
     stats = {
         "model_run": args.model,
-        "checkpoint": ckpt_path.name,
-        "checkpoint_path": str(ckpt_path),
+        "checkpoint": ckpt_path.name if ckpt_path != None else "N/A",
+        "checkpoint_path": str(ckpt_path) if ckpt_path != None else "N/A",
         "dataset": args.dataset_name,
         "partition": args.dataset_partition,
         "fraction": args.dataset_fraction,
