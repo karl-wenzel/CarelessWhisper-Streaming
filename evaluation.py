@@ -162,7 +162,6 @@ def evaluate():
         base_model_name = hparams.get("size", args.model)
 
     # 1. Load Model
-    print(f"Loading model from run '{args.model}' using base model '{base_model_name}'...")
     model = load_streaming_model(
         name=args.model if args.cw else base_model_name,
         gran=args.chunk_size,
