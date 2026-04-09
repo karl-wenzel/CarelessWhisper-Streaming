@@ -283,7 +283,8 @@ def evaluate():
     print(f"RESULTS FOR:")
     print(f"MODEL: {args.model} on DATASET: {args.dataset_name}")
     print(f"PARTITION: {args.dataset_partition} % SAMPLES: {args.dataset_fraction}")
-    print(f"CHECKPOINT:    {ckpt_path.name}")
+    if ckpt_path != None:
+        print(f"CHECKPOINT:    {ckpt_path.name}")
     print(f"WER:           {wer * 100:.2f}%")
     print(f"RWER:          {rwer * 100:.2f}%")
     print(f"ARWER:         {arwer * 100:.2f}%")
