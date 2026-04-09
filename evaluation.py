@@ -257,26 +257,27 @@ def evaluate():
     avg_latency = np.mean(all_chunk_latencies) if all_chunk_latencies else 0
     rtf = total_processing_time_sec / total_audio_duration_sec if total_audio_duration_sec > 0 else 0
 
-    stats = {
-        "model_run": args.model,
-        "checkpoint": ckpt_path.name if ckpt_path != None else "N/A",
-        "checkpoint_path": str(ckpt_path) if ckpt_path != None else "N/A",
-        "dataset": args.dataset_name,
-        "partition": args.dataset_partition,
-        "fraction": args.dataset_fraction,
-        "wer": float(wer),
-        "rwer": float(rwer),
-        "arwer": float(arwer),
-        "avg_latency_ms": float(avg_latency * 1000),
-        "rtf": float(rtf),
-        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-    }
+    if not args.cw: # can only save stats if evaluating local model, as we then have a target to save them to
+        stats = {
+            "model_run": args.model,
+            "checkpoint": ckpt_path.name,
+            "checkpoint_path": str(ckpt_path),
+            "dataset": args.dataset_name,
+            "partition": args.dataset_partition,
+            "fraction": args.dataset_fraction,
+            "wer": float(wer),
+            "rwer": float(rwer),
+            "arwer": float(arwer),
+            "avg_latency_ms": float(avg_latency * 1000),
+            "rtf": float(rtf),
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+        }
 
-    # Always save next to the run directory now
-    save_path = ckpt_path.parent.parent / "evaluation.json"
-    with open(save_path, "w") as f:
-        json.dump(stats, f, indent=4)
-    print(f"Stats saved to: {save_path}")
+        # Always save next to the run directory now
+        save_path = ckpt_path.parent.parent / "evaluation.json"
+        with open(save_path, "w") as f:
+            json.dump(stats, f, indent=4)
+        print(f"Stats saved to: {save_path}")
 
     print("\n" + "=" * 30)
     print(f"RESULTS FOR:")
