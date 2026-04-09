@@ -145,28 +145,30 @@ def evaluate():
     parser.add_argument("-sa_kv_cache", action="store_true", help="Use self-attention KV cache")
     parser.add_argument("-ca_kv_cache", action="store_true", help="Use cross-attention KV cache")
     parser.add_argument("-verbose", action="store_true", help="Prints additional info while evaluating")
+    parser.add_argument("-cw", action="store_true", help="Uses a CW whisper base model instead of a local model.")
 
     # Dataset Setup
     parser.add_argument("--dataset_name", type=str, required=True, help="Key from ds_paths in ds_dict.py")
 
     args = parser.parse_args()
 
-    ckpt_path = _resolve_checkpoint_path(args.model, args.checkpoint)
-    print(f"Using checkpoint: {ckpt_path}")
+    if not args.cw:
+        ckpt_path = _resolve_checkpoint_path(args.model, args.checkpoint)
+        print(f"Using checkpoint: {ckpt_path}")
 
-    # Infer actual model size from checkpoint metadata if available, otherwise fall back to run name
-    checkpoint_obj = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    hparams = checkpoint_obj.get("hyper_parameters", checkpoint_obj.get("cfg", {}))
-    base_model_name = hparams.get("size", args.model)
+        # Infer actual model size from checkpoint metadata if available, otherwise fall back to run name
+        checkpoint_obj = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        hparams = checkpoint_obj.get("hyper_parameters", checkpoint_obj.get("cfg", {}))
+        base_model_name = hparams.get("size", args.model)
 
     # 1. Load Model
     print(f"Loading model from run '{args.model}' using base model '{base_model_name}'...")
     model = load_streaming_model(
-        name=base_model_name,
+        name=args.model if args.cw else base_model_name,
         gran=args.chunk_size,
         multilingual=args.multilingual,
         device=args.device,
-        local_ckpt_path=str(ckpt_path),
+        local_ckpt_path=None if args.cw else str(ckpt_path),
     )
     model.eval()
 
