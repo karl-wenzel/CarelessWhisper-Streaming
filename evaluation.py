@@ -189,6 +189,8 @@ def evaluate():
 
     global_rwer_num, global_rwer_den = 0, 0
     global_arwer_num, global_arwer_den = 0, 0
+    global_wer_i, global_wer_d, global_wer_s, global_wer_c = 0, 0, 0, 0
+
     all_chunk_latencies = []
     total_audio_duration_sec = 0.0
     total_processing_time_sec = 0.0
@@ -244,9 +246,17 @@ def evaluate():
         predictions.append(predicted_text.strip().lower())
         references.append(reference_text)
 
+        # count IDS once per sample, using final hypothesis vs full reference
+        i_f, d_f, s_f, c_f = calculate_idsc(reference_text, predicted_text)
+        global_wer_i += i_f
+        global_wer_d += d_f
+        global_wer_s += s_f
+        global_wer_c += c_f
+
         if args.verbose:
             print("Pred: " + predicted_text)
             print("Label:" + reference_text)
+            print(f"I={i_f}, D={d_f}, S={s_f}, C={c_f}")
             print("-" * 30)
 
     # 4. Final Aggregated Metric Calculation
@@ -286,6 +296,14 @@ def evaluate():
     if ckpt_path != None:
         print(f"CHECKPOINT:    {ckpt_path.name}")
     print(f"WER:           {wer * 100:.2f}%")
+
+    print("\n=== Final WER IDS Breakdown ===")
+    print(f"Insertions:    {global_wer_i}")
+    print(f"Deletions:     {global_wer_d}")
+    print(f"Substitutions: {global_wer_s}")
+    print(f"Correct:       {global_wer_c}")
+    print(f"Total errors:  {global_wer_i + global_wer_d + global_wer_s}")
+
     print(f"RWER:          {rwer * 100:.2f}%")
     print(f"ARWER:         {arwer * 100:.2f}%")
     print("-" * 20)
