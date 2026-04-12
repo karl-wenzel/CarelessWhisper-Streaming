@@ -27,6 +27,12 @@ def _resolve_csv_relative_path(csv_path: str, value):
     return str((Path(csv_path).resolve().parent / path).resolve())
 
 
+def _normalize_ds_paths(ds_path) -> list[str]:
+    if isinstance(ds_path, (list, tuple)):
+        return [str(path) for path in ds_path]
+    return [str(ds_path)]
+
+
 from pathlib import Path
 from typing import List, Optional, Tuple, Union, Dict
 from torch.utils.data import Dataset
@@ -59,8 +65,11 @@ class WAVsDataset(torch.utils.data.Dataset):
 
         if not no_labels:
             self.tokenizer = tokenizer if tokenizer else careless_whisper_stream.tokenizer.get_tokenizer(True, language="en", task="transcribe")
-        self.ds_path = ds_path
-        self.ds_df = pd.read_csv(ds_path[0], sep=sep, index_col=False)
+        self.ds_paths = _normalize_ds_paths(ds_path)
+        self.ds_df = pd.concat(
+            [pd.read_csv(path, sep=sep, index_col=False).assign(__source_csv_path=path) for path in self.ds_paths],
+            ignore_index=True,
+        )
         self.sr = 16_000
         self.no_labels = no_labels
         self.custom_len = custom_len
@@ -79,7 +88,7 @@ class WAVsDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         item = self.ds_df.iloc[idx]
 
-        wav_path = _resolve_csv_relative_path(self.ds_path, item["wav_path"])
+        wav_path = _resolve_csv_relative_path(item["__source_csv_path"], item["wav_path"])
         audio = careless_whisper_stream.load_audio(wav_path, sr=self.sr)
         audio = careless_whisper_stream.pad_or_trim(audio.flatten())
         mel = self._calc_mel(audio)
@@ -120,9 +129,13 @@ class AlignedTextGridDataset(torch.utils.data.Dataset):
         super().__init__()
 
         self.tokenizer = tokenizer if tokenizer else careless_whisper_stream.tokenizer.get_tokenizer(True, language="en", task="transcribe")
+        self.ds_paths = _normalize_ds_paths(ds_path)
         print("Reading ds")
-        self.ds_df = pd.concat([pd.read_csv(path, sep=separator) for path in ds_path], ignore_index=True)
-        print("finished Reading ds, its length: ", len(self.ds_df), len(self.alignments_cache))
+        self.ds_df = pd.concat(
+            [pd.read_csv(path, sep=separator).assign(__source_csv_path=path) for path in self.ds_paths],
+            ignore_index=True,
+        )
+        print("finished Reading ds, its length: ", len(self.ds_df))
         self.sr = sample_rate
         self.custom_len = custom_len
         self.get_streamed_mel = get_streamed_mel
@@ -155,11 +168,11 @@ class AlignedTextGridDataset(torch.utils.data.Dataset):
     def __getitem__(self, index):
         item = self.ds_df.iloc[index]
 
-        wav_path = _resolve_csv_relative_path(self.ds_path, item["wav_path"])
+        wav_path = _resolve_csv_relative_path(item["__source_csv_path"], item["wav_path"])
         audio = careless_whisper_stream.pad_or_trim(careless_whisper_stream.load_audio(wav_path, sr=self.sr))
         mel = self._calc_mel(audio)
         
-        tg_path = _resolve_csv_relative_path(self.ds_path, item["tg_path"])
+        tg_path = _resolve_csv_relative_path(item["__source_csv_path"], item["tg_path"])
 
         if ".wrd" in tg_path:
             text_intervals = self._get_intervals_from_wrd_file(tg_path)
@@ -173,13 +186,15 @@ class AlignedTextGridDataset(torch.utils.data.Dataset):
         endpoints = [0, 0, 0]
         tokens = []
         for i, interval in enumerate(text_intervals):
-            curr_tokens = self.tokenizer.encode(interval.label if i == 0 else " " + interval.label)
+            curr_tokens = tokenizer.encode(interval.label if i == 0 else " " + interval.label)
+            if len(curr_tokens) == 0:
+                continue
             n_diff = (interval.end - interval.start) / len(curr_tokens)
             endpoints.extend([interval.start + (i + 1) * n_diff for i in range(len(curr_tokens))])
             tokens.extend(curr_tokens)
         
         text = [*tokenizer.sot_sequence_including_notimestamps] + tokens
-        labels = text[1:] + [self.tokenizer.eot]
+        labels = text[1:] + [tokenizer.eot]
         endpoints.append(endpoints[-1] + 0.5)
         
         assert len(endpoints) == len(labels) == len(text)
@@ -241,8 +256,12 @@ class AlignedTextGridDatasetLMDB(torch.utils.data.Dataset):
         super().__init__()
 
         self.tokenizer = tokenizer if tokenizer else careless_whisper_stream.tokenizer.get_tokenizer(True, language="en", task="transcribe")
+        self.ds_paths = _normalize_ds_paths(ds_path)
         print("Reading ds")
-        self.ds_df = pd.concat([pd.read_csv(path, sep=separator) for path in ds_path], ignore_index=True)
+        self.ds_df = pd.concat(
+            [pd.read_csv(path, sep=separator).assign(__source_csv_path=path) for path in self.ds_paths],
+            ignore_index=True,
+        )
         print("finished Reading ds, its length: ", len(self.ds_df))
         
         self.sr = sample_rate
@@ -293,20 +312,22 @@ class AlignedTextGridDatasetLMDB(torch.utils.data.Dataset):
         item = self.ds_df.iloc[index]
 
         # 1. Load Audio
-        audio = careless_whisper_stream.pad_or_trim(careless_whisper_stream.load_audio(item["wav_path"], sr=self.sr))
+        wav_path = _resolve_csv_relative_path(item["__source_csv_path"], item["wav_path"])
+        audio = careless_whisper_stream.pad_or_trim(careless_whisper_stream.load_audio(wav_path, sr=self.sr))
         mel = self._calc_mel(audio)
         
         # 2. Load Intervals (Logic Check: LMDB vs File System)
         text_intervals = None
         
         # Check if this item specifies an LMDB source (e.g., if you added a 'db_name' column to your CSV)
-        db_name = 'VOXP-EN-ALIGNED' if 'LIBRI' not in item.get('tg_path') else 'LIBRI-960-ALIGNED'
+        tg_path = _resolve_csv_relative_path(item["__source_csv_path"], item["tg_path"])
+        db_name = 'VOXP-EN-ALIGNED' if 'LIBRI' not in str(item.get('tg_path')) else 'LIBRI-960-ALIGNED'
 
         if self.lmdb_paths and db_name in self.lmdb_paths:
             self._init_lmdb(db_name)
             with self.envs[db_name].begin(write=False, buffers=True) as txn:
                 # We use the tg_path or a unique ID as the key
-                wrd_bytes = txn.get(item["tg_path"].encode('ascii'))
+                wrd_bytes = txn.get(tg_path.encode('ascii'))
                 if wrd_bytes:
                     text_intervals = pickle.loads(bytes(wrd_bytes))
 
@@ -314,11 +335,11 @@ class AlignedTextGridDatasetLMDB(torch.utils.data.Dataset):
         used_fallback = False
         if text_intervals is None:
             used_fallback = True
-            if ".wrd" in item["tg_path"]:
-                text_intervals = self._get_intervals_from_wrd_file(item["tg_path"])
+            if ".wrd" in tg_path:
+                text_intervals = self._get_intervals_from_wrd_file(tg_path)
             else:
                 # Assuming praatio/textgrid is used here
-                path = Path(item["tg_path"]) if not os.path.exists(Path(item["tg_path"]).with_suffix('.punc')) else Path(item["tg_path"]).with_suffix('.punc')
+                path = Path(tg_path) if not os.path.exists(Path(tg_path).with_suffix('.punc')) else Path(tg_path).with_suffix('.punc')
                 tg = textgrid.openTextgrid(path, includeEmptyIntervals=False)
                 text_intervals = tg.getTier("words") if path.suffix == '.TextGrid' else tg.getTier("words_punctuated")
 
@@ -328,13 +349,15 @@ class AlignedTextGridDatasetLMDB(torch.utils.data.Dataset):
         endpoints = [0, 0, 0]
         tokens = []
         for i, interval in enumerate(text_intervals):
-            curr_tokens = self.tokenizer.encode(interval.label if i == 0 else " " + interval.label)
+            curr_tokens = tokenizer.encode(interval.label if i == 0 else " " + interval.label)
+            if len(curr_tokens) == 0:
+                continue
             n_diff = (interval.end - interval.start) / len(curr_tokens)
             endpoints.extend([interval.start + (i + 1) * n_diff for i in range(len(curr_tokens))])
             tokens.extend(curr_tokens)
         
         text = [*tokenizer.sot_sequence_including_notimestamps] + tokens
-        labels = text[1:] + [self.tokenizer.eot]
+        labels = text[1:] + [tokenizer.eot]
         endpoints.append(endpoints[-1] + 0.5)
         
         assert len(endpoints) == len(labels) == len(text)
@@ -515,19 +538,23 @@ class TEDLIUM(Dataset):
         raise ValueError(f"File '{file_name}' not found in the dataset")
     
 class PrecomputedAlignedDataset(torch.utils.data.Dataset):
-    def __init__(self, manifest_path: str, custom_len: int = 0):
-        self.manifest_path = manifest_path
-        self.df = pd.read_csv(manifest_path)
+    def __init__(self, manifest_path: Union[str, list], custom_len: int = 0):
+        self.manifest_paths = _normalize_ds_paths(manifest_path)
+        self.df = pd.concat(
+            [pd.read_csv(path).assign(__source_manifest_path=path) for path in self.manifest_paths],
+            ignore_index=True,
+        )
         self.custom_len = custom_len
 
         # Faster than repeated iloc on a full dataframe
-        self.paths = self.df["pt_path"].tolist()
+        self.items = list(zip(self.df["__source_manifest_path"].tolist(), self.df["pt_path"].tolist()))
 
     def __len__(self):
-        return int(self.custom_len) if 0 < self.custom_len < len(self.paths) else len(self.paths)
+        return int(self.custom_len) if 0 < self.custom_len < len(self.items) else len(self.items)
 
     def __getitem__(self, index):
-        pt_path = _resolve_csv_relative_path(self.manifest_path, self.paths[index])
+        manifest_path, rel_pt_path = self.items[index]
+        pt_path = _resolve_csv_relative_path(manifest_path, rel_pt_path)
         item = torch.load(pt_path, map_location="cpu")
         return {
             "input_ids": item["input_ids"],

@@ -18,7 +18,6 @@ from pytorch_lightning import LightningModule
 from torch.optim.lr_scheduler import LinearLR, ReduceLROnPlateau
 from training_code.datasets_classes import TIMIT, WAVsDataset, AlignedTextGridDataset, PrecomputedAlignedDataset
 from training_code.collators import WhisperDataCollatorWithPadding, LoRAWhisperDataCollatorWithPadding
-from training_code.datasets_classes import TIMIT, WAVsDataset, AlignedTextGridDataset, AlignedTextGridDatasetLMDB
 
 class WhisperCustomModel(LightningModule):
     def __init__(self, cfg:Config, model_name="tiny", lang="en", train_dataset: str = None, eval_dataset: str = None, task="transcribe") -> None:
@@ -214,14 +213,14 @@ class LoRAStreamedWhisper(WhisperCustomModel):
 
             # find first eot in predictions
             eot_mask = (pred_tokens == self.tokenizer.eot)
-            eot_indices = eot_mask.int().argmax(dim=-1)
 
             # create new labels
             clone_labels = labels.clone()
 
             for i in range(labels.shape[0]):
-                eot_idx = eot_indices[i].item()
-                if eot_idx < labels.shape[1]:
+                eot_positions = torch.nonzero(eot_mask[i], as_tuple=False)
+                if eot_positions.numel() > 0:
+                    eot_idx = eot_positions[0].item()
                     clone_labels[i, :eot_idx + 1] = pred_tokens[i, :eot_idx + 1]
                     clone_labels[i, eot_idx] = self.tokenizer.eot
                     clone_labels[i, eot_idx + 1:] = -100
@@ -385,7 +384,7 @@ class LoRAStreamedWhisper(WhisperCustomModel):
                 print("Could not decode labels")
 
         if self.full_stream:
-            result = self._forward_step_stream(batch, batch_id, "train")
+            result = self._forward_step_stream(batch, "train")
             loss = result["loss"]
         else:
             loss = self._forward_step(batch, "train")
@@ -395,7 +394,12 @@ class LoRAStreamedWhisper(WhisperCustomModel):
         return loss
 
     def validation_step(self, batch, batch_id):
-        out, loss = self._forward_step(batch, "val")
+        if self.full_stream:
+            result = self._forward_step_stream(batch, "val")
+            out, loss = result["out"], result["loss"]
+        else:
+            out, loss = self._forward_step(batch, "val")
+
         wer = self.calc_wer_val(out, batch["labels"])
 
         self.log("val/loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
@@ -433,10 +437,6 @@ class LoRAStreamedWhisper(WhisperCustomModel):
 
     def on_train_epoch_start(self):
         random.seed(self.current_epoch + self.cfg.seed)
-
-    def on_train_epoch_end(self):        
-        model_sched = self.lr_schedulers()
-        model_sched.step(self.trainer.callback_metrics["val/loss"])
 
     def get_dataset(self, ds_path, split):
         print(f"Stream simulation mode: {self.simulate_stream}")

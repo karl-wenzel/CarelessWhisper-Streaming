@@ -52,6 +52,19 @@ project_names = {
 }
 
 
+def _resolve_dataset_paths(dataset_names, split: str, precomputed: bool):
+    selected_paths = []
+
+    for dataset_name in dataset_names:
+        dataset_cfg = ds_paths[dataset_name]
+        if precomputed:
+            selected_paths.append(dataset_cfg["precomputed"][split])
+        else:
+            selected_paths.append(dataset_cfg[split])
+
+    return selected_paths[0] if len(selected_paths) == 1 else selected_paths
+
+
 def _extract_epoch_from_name(path: Path) -> int:
     m = re.fullmatch(r"checkpoint-epoch=(-?\d+)\.ckpt", path.name)
     if m:
@@ -309,17 +322,8 @@ if __name__ == "__main__":
     dir_name = cfg.name
     project_name = "lora" if (cfg.lora and cfg.streaming_train) else None
 
-    selected_train = (
-        ds_paths[args.dataset]["precomputed"]["train"]
-        if args.precomputed_features
-        else ds_paths[args.dataset]["train"]
-    )
-
-    selected_val = (
-        ds_paths[args.dataset]["precomputed"]["val"]
-        if args.precomputed_features
-        else ds_paths[args.dataset]["val"]
-    )
+    selected_train = _resolve_dataset_paths(args.dataset, "train", args.precomputed_features)
+    selected_val = _resolve_dataset_paths(args.dataset, "val", args.precomputed_features)
 
     lr_addition = f"_LR-{cfg.learning_rate}"
     effective_bsize = cfg.batch_size * cfg.gradient_accumulation_steps
