@@ -72,7 +72,9 @@ class MyStream:
             elif pad_trim:
                 self.wav_array = pad_or_trim(load_audio(wav_file, sample_rate), length=N_SAMPLES+180) # wav array
             else:
-                self.wav_array = pad_or_trim(audio, length=audio.shape[-1]+padding_samples)
+                audio = load_audio(wav_file, sample_rate)
+                self.wav_array = pad_or_trim(audio, length=audio.shape[-1]+180)
+                print(f"{self.wav_array.shape=}")
 
                 if (self.verbose):
                     print(f"{self.wav_array.shape=}")
