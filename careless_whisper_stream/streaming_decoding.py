@@ -858,19 +858,19 @@ class DecodingTask:
 
         # decoder: implements how to select the next tokens, given the autoregressive distribution
         if options.stream_decode and options.beam_size in [None, 0]:
-            print(f"Initialized StreamingDecoder with temperature {options.temperature} and tokens_per_frame {options.tokens_per_frame}")
+            #print(f"Initialized StreamingDecoder with temperature {options.temperature} and tokens_per_frame {options.tokens_per_frame}")
             self.decoder = StreamingDecoder(
                 options.temperature, options.tokens_per_frame, tokenizer.eot, self.inference, options.n_tokens_look_back, options.streaming_timestamps
             )
         elif options.stream_decode and options.beam_size > 0:
-            print(f"Initialized BeamStreamingDecoder with beam size {options.beam_size} and temperature {options.temperature}")
+            #print(f"Initialized BeamStreamingDecoder with beam size {options.beam_size} and temperature {options.temperature}")
             self.decoder = BeamStreamingDecoder(
                 options.temperature, options.tokens_per_frame, tokenizer.eot, self.inference, options.n_tokens_look_back, options.beam_size, tokenizer.sot_lm, options.wait_for_all
                 # options.temperature, options.tokens_per_frame, tokenizer.eot, self.inference, options.n_tokens_look_back, options.beam_size, tokenizer.eot, options.wait_for_all
             )
         elif options.beam_size is not None and options.beam_size > 0:
             self.decoder = BeamSearchDecoder(options.beam_size, tokenizer.eot, self.inference, options.patience)
-            print(f"Initialized BeamSearchDecoder with beam size {options.beam_size} and patience {options.patience}")
+            #print(f"Initialized BeamSearchDecoder with beam size {options.beam_size} and patience {options.patience}")
 
             if self.options.localagreement:
                 self.decoder = BeamStreamingDecoder(
@@ -879,7 +879,7 @@ class DecodingTask:
                 self.decoder._mark_check_tokens(False)
         else:
             self.decoder = GreedyDecoder(options.temperature, tokenizer.eot)
-            print(f"Initialized GreedyDecoder with temperature {options.temperature}")
+            #print(f"Initialized GreedyDecoder with temperature {options.temperature}")
             
             if self.options.localagreement:
                 self.decoder = self.decoder = StreamingDecoder(
