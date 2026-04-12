@@ -238,15 +238,26 @@ class LoRAStreamedWhisper(WhisperCustomModel):
             
             # take only relevant labels into account
             mask = (endpoints <= t_seconds) & (endpoints != -100)
-            eot_indices = mask.int().argmin(dim=-1)
             
             clone_labels = labels.clone()
             
             # ignore irrelevant labels
             clone_labels[~mask] = -100
             
-            # mark eot labels
-            clone_labels[range(labels.shape[0]), eot_indices] = self.tokenizer.eot 
+            # Mark the first unavailable token as EOT, or keep the true final EOT
+            # once the full transcript is already available.
+            for batch_idx in range(labels.shape[0]):
+                row_mask = mask[batch_idx]
+                false_positions = torch.nonzero(~row_mask, as_tuple=False)
+
+                if false_positions.numel() > 0:
+                    eot_idx = false_positions[0].item()
+                else:
+                    valid_positions = torch.nonzero(labels[batch_idx] != -100, as_tuple=False)
+                    eot_idx = valid_positions[-1].item() if valid_positions.numel() > 0 else 0
+
+                clone_labels[batch_idx, eot_idx] = self.tokenizer.eot
+
             return clone_labels
 
     def _get_sample_points(self, endpoints: Tensor):
