@@ -376,7 +376,15 @@ class SpectrogramStream:
         samples_gran = HOP_LENGTH * (ms_gran // 10)
         sub_mel_frames = int(total_frames / ms_gran) * 10
         # print(samples_gran, sub_mel_frames)
-        pred_mel = torch.cat([self.calc_mel_with_new_frame(audio[..., (i * samples_gran) + (40 * int(i != 0)): ((i + 1) * samples_gran) + 40], is_last=(i == sub_mel_frames - 1)) for i in range(sub_mel_frames)], dim=-1)
+        pred_mel = torch.cat(
+            [
+                self.calc_mel_with_new_frame(
+                    audio[..., (i * samples_gran) + (40 * int(i != 0)): ((i + 1) * samples_gran) + 40]
+                )
+                for i in range(sub_mel_frames)
+            ],
+            dim=-1,
+        )
         
         if get_gt: 
             gt_mel = log_mel_spectrogram(audio)
