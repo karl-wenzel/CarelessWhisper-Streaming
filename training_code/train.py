@@ -332,7 +332,6 @@ if __name__ == "__main__":
         cfg.name += f"_random-masking{cfg.slices_num}"
 
     if cfg.lora and cfg.streaming_train:
-        dir_name = f"LoRA_streamed_whisper_{cfg.size}_{'-'.join(cfg.dataset)}_{effective_bsize}_{cfg.name}{lr_addition}_r{cfg.rank}_g{cfg.gran}_eg{cfg.extra_gran_blocks}_top{cfg.top_k}_full-stream{cfg.streaming_train}_random-order{cfg.streaming_random}_fraction{cfg.streaming_fraction}"
         project_name = "lora"
     
     # Run trainer
