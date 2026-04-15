@@ -154,13 +154,15 @@ def evaluate():
 
     if not args.cw:
         ckpt_path = _resolve_checkpoint_path(args.model, args.checkpoint)
-        print(f"Using checkpoint: {ckpt_path}")
+        print(f"Using checkpoint of local model: {ckpt_path}")
 
         # Infer actual model size from checkpoint metadata if available, otherwise fall back to run name
         checkpoint_obj = torch.load(ckpt_path, map_location="cpu", weights_only=False)
         hparams = checkpoint_obj.get("hyper_parameters", checkpoint_obj.get("cfg", {}))
         base_model_name = hparams.get("size", args.model)
+        print(f"model size: {base_model_name}")
     else:
+        print(f"Using cw model. size: {args.model} chunk size: {args.chunk_size}.")
         ckpt_path = None
 
     # 1. Load Model
@@ -196,6 +198,9 @@ def evaluate():
     total_processing_time_sec = 0.0
     predictions, references = [], []
 
+    chunk_duration_sec = model.encoder.gran * 0.02
+    print(f"model chunk size (s): {chunk_duration_sec}")
+
     # 3. Inference Loop
     print(f"Starting evaluation on {len(df)} samples...")
     for _, row in tqdm(df.iterrows(), total=len(df)):
@@ -207,7 +212,6 @@ def evaluate():
 
         gt_words = extract_words_and_times_from_tg(tg_path)
         reference_text = " ".join([w["word"] for w in gt_words]).strip().lower()
-        chunk_duration_sec = args.chunk_size / 1000.0
 
         results = transcribe(
             model=model,
