@@ -72,6 +72,46 @@ def _extract_epoch_from_name(path: Path) -> int:
     return -10**9
 
 
+def _normalize_cli_path(path_value: str | None) -> str | None:
+    """Expand user/env syntax from CLI args and return an absolute path."""
+    if path_value in (None, ""):
+        return path_value
+
+    expanded = os.path.expandvars(os.path.expanduser(path_value))
+    return str(Path(expanded).resolve())
+
+
+def _find_latest_epoch_checkpoint(run_name: str) -> str:
+    """
+    Return the numerically latest checkpoint from:
+        {ckpt_root}/{run_name}/checkpoint/
+
+    Accepted filename style ONLY:
+    - checkpoint-epoch=XXXX.ckpt
+    - checkpoint-epoch=-001.ckpt
+    """
+    run_dir = Path(ckpt_root) / run_name
+    checkpoint_dir = run_dir / "checkpoint"
+
+    if not checkpoint_dir.exists():
+        raise FileNotFoundError(
+            f"Checkpoint directory not found for run '{run_name}': {checkpoint_dir}"
+        )
+
+    ckpt_files = [
+        p for p in checkpoint_dir.iterdir()
+        if p.is_file() and re.fullmatch(r"checkpoint-epoch=-?\d+\.ckpt", p.name)
+    ]
+    if not ckpt_files:
+        raise FileNotFoundError(
+            f"No valid checkpoint files found in: {checkpoint_dir}"
+        )
+
+    latest_ckpt = max(ckpt_files, key=_extract_epoch_from_name)
+    print(f"Using latest checkpoint for run '{run_name}': {latest_ckpt}")
+    return str(latest_ckpt)
+
+
 def _find_best_warmstart_checkpoint(run_name: str) -> str:
     """
     Looks in:
@@ -119,9 +159,25 @@ def _find_best_warmstart_checkpoint(run_name: str) -> str:
             pass
 
     # 2) Fall back to highest checkpoint epoch
-    best_fallback = max(ckpt_files, key=_extract_epoch_from_name)
-    print(f"Using latest warmstart checkpoint by epoch fallback: {best_fallback}")
-    return str(best_fallback)
+    return _find_latest_epoch_checkpoint(run_name)
+
+
+def _resolve_resume_checkpoint(ckpt_value: str | None) -> str | None:
+    """
+    Accept either:
+    - a direct checkpoint file path
+    - a local run name under ckpt_root, which resolves to the latest epoch
+    """
+    normalized = _normalize_cli_path(ckpt_value)
+    if normalized in (None, ""):
+        return normalized
+
+    normalized_path = Path(normalized)
+    if normalized_path.exists():
+        return str(normalized_path)
+
+    # If the normalized path does not exist, treat the original CLI value as a run name.
+    return _find_latest_epoch_checkpoint(ckpt_value)
 
 
 def _apply_warmstart(model: LoRAStreamedWhisper, cfg: Config, model_name: str) -> None:
@@ -267,6 +323,9 @@ if __name__ == "__main__":
     project_name = None
     args = parse_cmdl()
 
+    args.ckpt = _resolve_resume_checkpoint(args.ckpt)
+    args.lora_ckpt = _normalize_cli_path(args.lora_ckpt)
+
     cfg = Config(
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
@@ -318,6 +377,9 @@ if __name__ == "__main__":
     if cfg.streaming_train:
         assert cfg.sim_stream == cfg.streaming_train, "When running in full stream mode you must simulate streaming!"
         cfg.sim_stream = True
+
+    if cfg.ckpt is not None:
+        print(f"Resolved resume checkpoint: {cfg.ckpt}")
 
     dir_name = cfg.name
     project_name = "lora" if (cfg.lora and cfg.streaming_train) else None
