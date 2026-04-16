@@ -113,52 +113,8 @@ def _find_latest_epoch_checkpoint(run_name: str) -> str:
 
 
 def _find_best_warmstart_checkpoint(run_name: str) -> str:
-    """
-    Looks in:
-        {ckpt_root}/{run_name}/checkpoint/
 
-    Accepted filename style ONLY:
-    - checkpoint-epoch=XXXX.ckpt
-    - checkpoint-epoch=-001.ckpt
-
-    Preference order:
-    1. best_model_path from a Lightning callback state in the checkpoint
-    2. numerically highest checkpoint-epoch=XXXX.ckpt
-    """
-    run_dir = Path(ckpt_root) / run_name
-    checkpoint_dir = run_dir / "checkpoint"
-
-    if not checkpoint_dir.exists():
-        raise FileNotFoundError(
-            f"Warmstart checkpoint directory not found: {checkpoint_dir}"
-        )
-
-    ckpt_files = [
-        p for p in checkpoint_dir.iterdir()
-        if p.is_file() and re.fullmatch(r"checkpoint-epoch=-?\d+\.ckpt", p.name)
-    ]
-    if not ckpt_files:
-        raise FileNotFoundError(
-            f"No valid checkpoint files found in: {checkpoint_dir}"
-        )
-
-    # 1) Try to recover best_model_path from any saved Lightning checkpoint metadata
-    for ckpt_path in sorted(ckpt_files):
-        try:
-            ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-            callbacks = ckpt.get("callbacks", {})
-            for _, cb_state in callbacks.items():
-                if isinstance(cb_state, dict):
-                    best_model_path = cb_state.get("best_model_path")
-                    if best_model_path and os.path.exists(best_model_path):
-                        best_path = Path(best_model_path)
-                        if re.fullmatch(r"checkpoint-epoch=-?\d+\.ckpt", best_path.name):
-                            print(f"Using best warmstart checkpoint from metadata: {best_model_path}")
-                            return str(best_path)
-        except Exception:
-            pass
-
-    # 2) Fall back to highest checkpoint epoch
+    # highest checkpoint epoch
     return _find_latest_epoch_checkpoint(run_name)
 
 
