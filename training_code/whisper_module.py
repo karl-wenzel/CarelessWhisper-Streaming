@@ -349,9 +349,6 @@ class LoRAStreamedWhisper(WhisperCustomModel):
                 self.manual_backward(loss)
                 optimizer.step() # might move optimizer step to out of the loop for faster training
 
-        if step == "train":
-            return loss
-
         return {"out": out, "loss": loss}
 
     def _forward_step(self, batch, step):
