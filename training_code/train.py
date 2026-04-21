@@ -221,6 +221,8 @@ def train_model(log_output_dir, check_output_dir, model_name, train_set, val_set
             min_delta=0.00,
             patience=2,
             mode="min",
+            check_on_train_epoch_end=False,
+            strict=True,
         )
         callback_list.append(early_stop_callback)
 
