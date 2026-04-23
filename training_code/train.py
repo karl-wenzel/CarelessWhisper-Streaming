@@ -300,6 +300,7 @@ if __name__ == "__main__":
         sample_rate=16_000,
         ckpt=args.ckpt,
         size=args.size,
+        lang=args.lang,
         lora=args.lora,
         lora_ckpt=args.lora_ckpt,
         rank=args.rank,

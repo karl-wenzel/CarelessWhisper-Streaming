@@ -31,6 +31,18 @@ ds_paths = {
         },
     },
 
+    'CV-DE-ALIGNED': {
+        'train': "/mtec/local/MozillaCommonVoice/DE/csvs/train.csv",
+        'val': "/mtec/local/MozillaCommonVoice/DE/csvs/dev.csv",
+        'test': "/mtec/local/MozillaCommonVoice/DE/csvs/test.csv",
+
+        'precomputed': {
+            'train': "/mtec/local/MozillaCommonVoice/DE/precomputed/train/manifest.csv",
+            'val': "/mtec/local/MozillaCommonVoice/DE/precomputed/dev/manifest.csv",
+            'test': "/mtec/local/MozillaCommonVoice/DE/precomputed/test/manifest.csv",
+        },
+    },
+
     'LIBRI-100-CLEAN-ALIGNED': {
         'train': "/mtec/local/LibriSpeech_aligned/csvs/train-clean-100.csv",
         'val': "/mtec/local/LibriSpeech_aligned/csvs/dev-clean.csv",

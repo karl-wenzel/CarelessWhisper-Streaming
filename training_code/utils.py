@@ -68,6 +68,7 @@ def parse_cmdl():
     # variables for trainer
     parser.add_argument('--name', type=str, help="Trained model name", default="model")
     parser.add_argument('--size', type=str, help="Whisper size - can use only [tiny, base, small, medium, large, large-v2]", default="tiny")
+    parser.add_argument('--lang', type=str, help="Language token to use for transcription (e.g. en, de)", default="en")
     parser.add_argument('--ckpt', type=str, help="ckpt loading to resume training from", default=None)
     parser.add_argument('--fast_dev_run', type=int, help="run few dev runs for sanity checks on lightning trainer", default=None)
     parser.add_argument('--top_k', type=int, help="Top K checkpoints to save, use 1 for the best, -1 for last", default=1)
