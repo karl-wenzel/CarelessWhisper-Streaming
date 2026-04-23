@@ -40,9 +40,11 @@ os.makedirs(args.output_dir, exist_ok=True)
 entries = []
 AUDIO_EXTENSIONS = (".wav", ".flac")
 
-for root, _, files in os.walk(args.dataset_root):
-    # 1. Load transcriptions
+
+def load_transcriptions(root, files):
     transcriptions = {}
+
+    # LibriSpeech-style folder-level transcript files
     for file in files:
         if file.endswith(".trans.txt"):
             trans_path = os.path.join(root, file)
@@ -53,7 +55,20 @@ for root, _, files in os.walk(args.dataset_root):
                         file_id, text = parts
                         transcriptions[file_id] = text
 
-    # 2. Process audio files
+    # MFA/Common Voice-style per-utterance .lab files
+    for file in files:
+        if file.endswith(".lab"):
+            file_id = os.path.splitext(file)[0]
+            lab_path = os.path.join(root, file)
+            with open(lab_path, "r", encoding="utf-8") as f:
+                transcriptions[file_id] = f.read().strip()
+
+    return transcriptions
+
+
+for root, _, files in os.walk(args.dataset_root):
+    transcriptions = load_transcriptions(root, files)
+
     for file in files:
         if file.endswith(AUDIO_EXTENSIONS):
             audio_path = os.path.join(root, file)
