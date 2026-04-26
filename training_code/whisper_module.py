@@ -13,7 +13,7 @@ from torch.optim.adamw import AdamW
 from training_code.utils import Config
 from careless_whisper_stream import StreamingWhisper
 from careless_whisper_stream.audio import HOP_LENGTH
-from careless_whisper_stream.normalizers import BasicTextNormalizer, EnglishTextNormalizer
+from careless_whisper_stream.normalizers import BasicTextNormalizer, EnglishTextNormalizer, GermanTextNormalizer
 from pytorch_lightning import LightningModule
 from torch.optim.lr_scheduler import LinearLR, ReduceLROnPlateau
 from training_code.datasets_classes import TIMIT, WAVsDataset, AlignedTextGridDataset, PrecomputedAlignedDataset
@@ -178,7 +178,12 @@ class LoRAStreamedWhisper(WhisperCustomModel):
             if "lora" not in n:
                 p.requires_grad = False
 
-        self.normalizer = EnglishTextNormalizer() if lang == "en" else BasicTextNormalizer()
+        if lang == "en":
+            self.normalizer = EnglishTextNormalizer()
+        elif lang == "de":
+            self.normalizer = GermanTextNormalizer()
+        else:
+            self.normalizer = BasicTextNormalizer()
         self.model.encoder._use_mask(True)
 
         self.model_name = model_name
