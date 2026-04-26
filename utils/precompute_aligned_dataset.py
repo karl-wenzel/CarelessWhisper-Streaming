@@ -120,11 +120,12 @@ def process_row(
     get_streamed_mel: bool,
     n_mels: int,
     multilingual: bool,
+    default_lang: str,
     spec_streamer: SpectrogramStream | None,
 ):
     wav_path = resolve_csv_relative_path(csv_path, row.wav_path)
     tg_path = resolve_csv_relative_path(csv_path, row.tg_path)
-    lang = row.lang if hasattr(row, "lang") and pd.notna(row.lang) else "en"
+    lang = row.lang if hasattr(row, "lang") and pd.notna(row.lang) else default_lang
 
     tokenizer = get_tokenizer_cached(multilingual=multilingual, lang=lang)
 
@@ -153,6 +154,7 @@ def main():
     parser.add_argument("--out_dir", required=True, help="Directory to save .pt samples and manifest.csv")
     parser.add_argument("--sample_rate", type=int, default=16000)
     parser.add_argument("--n_mels", type=int, default=80)
+    parser.add_argument("--lang", default="en", help="Default Whisper language token to bake into samples when the CSV has no lang column, e.g. de")
     parser.add_argument("--get_streamed_mel", action="store_true")
     parser.add_argument("--multilingual", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
@@ -196,6 +198,7 @@ def main():
             get_streamed_mel=args.get_streamed_mel,
             n_mels=args.n_mels,
             multilingual=args.multilingual,
+            default_lang=args.lang,
             spec_streamer=spec_streamer,
         )
 
