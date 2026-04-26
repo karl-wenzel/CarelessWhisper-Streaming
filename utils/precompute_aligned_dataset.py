@@ -33,11 +33,11 @@ def get_tokenizer_cached(multilingual: bool, lang: str | None) -> Tokenizer:
     if not hasattr(get_tokenizer_cached, "_cache"):
         get_tokenizer_cached._cache = {}
 
-    key = ("multi", lang) if multilingual else ("en", "en")
+    effective_lang = lang or "en"
+    key = ("multi", effective_lang) if multilingual else ("single", effective_lang)
     if key not in get_tokenizer_cached._cache:
-        language = lang if multilingual else "en"
         get_tokenizer_cached._cache[key] = careless_whisper_stream.tokenizer.get_tokenizer(
-            True, language=language, task="transcribe"
+            True, language=effective_lang, task="transcribe"
         )
     return get_tokenizer_cached._cache[key]
 
