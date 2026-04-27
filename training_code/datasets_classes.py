@@ -39,11 +39,23 @@ from torch.utils.data import Dataset
 from torch import Tensor
 from tqdm import tqdm
 
+
+def _read_manifest_csv(path: str, sep: Optional[str] = "\t") -> pd.DataFrame:
+    """
+    Read a manifest CSV while tolerating either tab- or comma-separated files.
+    """
+    df = pd.read_csv(path, sep=sep, index_col=False)
+
+    if "wav_path" not in df.columns and len(df.columns) == 1:
+        df = pd.read_csv(path, sep=",", index_col=False)
+
+    return df
+
 class WAVsTextsDataset(torch.utils.data.Dataset):
     def __init__(self, ds_path: str, sep="\t", custom_len: int = 0):
         super().__init__()
 
-        self.ds_df = pd.read_csv(ds_path, sep=sep, index_col=False)
+        self.ds_df = _read_manifest_csv(ds_path, sep=sep)
         self.custom_len = custom_len
 
     def __len__(self):
@@ -67,7 +79,7 @@ class WAVsDataset(torch.utils.data.Dataset):
             self.tokenizer = tokenizer if tokenizer else careless_whisper_stream.tokenizer.get_tokenizer(True, language="en", task="transcribe")
         self.ds_paths = _normalize_ds_paths(ds_path)
         self.ds_df = pd.concat(
-            [pd.read_csv(path, sep=sep, index_col=False).assign(__source_csv_path=path) for path in self.ds_paths],
+            [_read_manifest_csv(path, sep=sep).assign(__source_csv_path=path) for path in self.ds_paths],
             ignore_index=True,
         )
         self.sr = 16_000
@@ -132,7 +144,7 @@ class AlignedTextGridDataset(torch.utils.data.Dataset):
         self.ds_paths = _normalize_ds_paths(ds_path)
         print("Reading ds")
         self.ds_df = pd.concat(
-            [pd.read_csv(path, sep=separator).assign(__source_csv_path=path) for path in self.ds_paths],
+            [_read_manifest_csv(path, sep=separator).assign(__source_csv_path=path) for path in self.ds_paths],
             ignore_index=True,
         )
         print("finished Reading ds, its length: ", len(self.ds_df))
@@ -259,7 +271,7 @@ class AlignedTextGridDatasetLMDB(torch.utils.data.Dataset):
         self.ds_paths = _normalize_ds_paths(ds_path)
         print("Reading ds")
         self.ds_df = pd.concat(
-            [pd.read_csv(path, sep=separator).assign(__source_csv_path=path) for path in self.ds_paths],
+            [_read_manifest_csv(path, sep=separator).assign(__source_csv_path=path) for path in self.ds_paths],
             ignore_index=True,
         )
         print("finished Reading ds, its length: ", len(self.ds_df))
@@ -541,7 +553,7 @@ class PrecomputedAlignedDataset(torch.utils.data.Dataset):
     def __init__(self, manifest_path: Union[str, list], custom_len: int = 0):
         self.manifest_paths = _normalize_ds_paths(manifest_path)
         self.df = pd.concat(
-            [pd.read_csv(path).assign(__source_manifest_path=path) for path in self.manifest_paths],
+            [_read_manifest_csv(path, sep=",").assign(__source_manifest_path=path) for path in self.manifest_paths],
             ignore_index=True,
         )
         self.custom_len = custom_len
