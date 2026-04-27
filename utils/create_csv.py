@@ -29,6 +29,7 @@ parser.add_argument("--val_ratio", type=float, default=0.1, help="Validation spl
 parser.add_argument("--test_ratio", type=float, default=0.1, help="Test split ratio")
 parser.add_argument("--seed", type=int, default=42, help="Random seed")
 parser.add_argument("--global_paths", action="store_true", help="If set, store absolute paths in CSV. Default: store paths relative to CSV location.")
+parser.add_argument("-v", "--verbose", action="store_true", help="Print per-file warnings while scanning the dataset.")
 
 args = parser.parse_args()
 
@@ -39,6 +40,9 @@ os.makedirs(args.output_dir, exist_ok=True)
 # -----------------------------
 entries = []
 AUDIO_EXTENSIONS = (".wav", ".flac", ".mp3")
+total_audio_files = 0
+missing_textgrid_count = 0
+missing_transcript_count = 0
 
 
 def load_transcriptions(root, files):
@@ -66,11 +70,20 @@ def load_transcriptions(root, files):
     return transcriptions
 
 
+def print_summary():
+    print("Scan summary:")
+    print(f"Audio files found: {total_audio_files}")
+    print(f"Valid entries written: {len(entries)}")
+    print(f"Missing TextGrids: {missing_textgrid_count}")
+    print(f"Missing transcripts: {missing_transcript_count}")
+
+
 for root, _, files in os.walk(args.dataset_root):
     transcriptions = load_transcriptions(root, files)
 
     for file in files:
         if file.lower().endswith(AUDIO_EXTENSIONS):
+            total_audio_files += 1
             audio_path = os.path.join(root, file)
             file_id = os.path.splitext(file)[0]
 
@@ -83,13 +96,18 @@ for root, _, files in os.walk(args.dataset_root):
             if os.path.exists(textgrid_path):
                 raw_text = transcriptions.get(file_id, "")
                 if raw_text == "":
-                    print(f"Warning: No transcript found for {file_id} in {root}")
+                    missing_transcript_count += 1
+                    if args.verbose:
+                        print(f"Warning: No transcript found for {file_id} in {root}")
 
                 entries.append((audio_path, textgrid_path, raw_text))
             else:
-                print(f"Skipping {audio_path}: missing TextGrid")
+                missing_textgrid_count += 1
+                if args.verbose:
+                    print(f"Skipping {audio_path}: missing TextGrid")
 
 if len(entries) == 0:
+    print_summary()
     print("No valid entries found. Exiting.")
     exit(1)
 
@@ -147,3 +165,5 @@ else:
     output_file = os.path.join(args.output_dir, f"{dataset_name}.csv")
     write_csv(output_file, entries)
     print(f"Single CSV written to {output_file} ({len(entries)} entries)")
+
+print_summary()
