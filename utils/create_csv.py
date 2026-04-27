@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Create CSV from dataset + per-utterance MFA TextGrids.
-Supports .flac and .wav audio files.
+Supports .flac, .mp3, and .wav audio files.
 
 Usage:
     ./create_csv.py \
@@ -38,7 +38,7 @@ os.makedirs(args.output_dir, exist_ok=True)
 # Gather all audio and TextGrid paths
 # -----------------------------
 entries = []
-AUDIO_EXTENSIONS = (".wav", ".flac")
+AUDIO_EXTENSIONS = (".wav", ".flac", ".mp3")
 
 
 def load_transcriptions(root, files):
@@ -70,7 +70,7 @@ for root, _, files in os.walk(args.dataset_root):
     transcriptions = load_transcriptions(root, files)
 
     for file in files:
-        if file.endswith(AUDIO_EXTENSIONS):
+        if file.lower().endswith(AUDIO_EXTENSIONS):
             audio_path = os.path.join(root, file)
             file_id = os.path.splitext(file)[0]
 
