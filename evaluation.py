@@ -13,6 +13,11 @@ import librosa
 import numpy as np
 
 from careless_whisper_stream import load_streaming_model
+from careless_whisper_stream.normalizers import (
+    BasicTextNormalizer,
+    EnglishTextNormalizer,
+    GermanTextNormalizer,
+)
 from careless_whisper_stream.streaming_transcribe import transcribe
 from training_code.ds_dict import ds_paths
 
@@ -91,6 +96,60 @@ def _resolve_csv_relative_path(csv_path: str, value: str) -> str:
     return os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(csv_path)), value))
 
 
+def _infer_language(
+    dataset_name: str,
+    explicit_lang: str | None = None,
+    checkpoint_cfg: dict | None = None,
+) -> str | None:
+    if explicit_lang:
+        return _canonicalize_language(explicit_lang)
+
+    if checkpoint_cfg:
+        for key in ("lang", "language"):
+            value = checkpoint_cfg.get(key)
+            if value:
+                return _canonicalize_language(value)
+
+    dataset_upper = dataset_name.upper()
+    if "CV-DE" in dataset_upper or "-DE-" in dataset_upper or dataset_upper.endswith("-DE"):
+        return "de"
+    if "LIBRI" in dataset_upper or "-EN-" in dataset_upper or dataset_upper.endswith("-EN"):
+        return "en"
+
+    return None
+
+
+def _canonicalize_language(language: str | None) -> str | None:
+    if language is None:
+        return None
+
+    language = str(language).strip().lower()
+    if language in {"en", "en-us", "en-gb", "english"}:
+        return "en"
+    if language in {"de", "de-de", "german", "deutsch"}:
+        return "de"
+
+    return language or None
+
+
+def _get_normalizer(language: str | None):
+    if language == "en":
+        return EnglishTextNormalizer()
+
+    if language == "de":
+        try:
+            return GermanTextNormalizer()
+        except ImportError as exc:
+            print(f"Warning: {exc} Falling back to BasicTextNormalizer for German evaluation.")
+            return BasicTextNormalizer()
+
+    return BasicTextNormalizer()
+
+
+def _normalize_for_eval(text: str, normalizer) -> str:
+    return normalizer(str(text or "")).strip()
+
+
 def extract_words_and_times_from_tg(tg_path):
     """Reconstructs the transcript and timestamps from a TextGrid using praatio."""
     try:
@@ -142,6 +201,7 @@ def evaluate():
     parser.add_argument("--dataset_fraction", type=float, default=1.0, help="Fraction of the dataset, that will be used. 1.0 (100%) by default.")
     parser.add_argument("--dataset_partition", type=str, default="test", help="The partition of the dataset that will be used for evaluation. 'test' by default.")
     parser.add_argument("--beam_size", type=int, default=5, help="Beam size during inference.")
+    parser.add_argument("--lang", type=str, default=None, help="Language code for normalization/transcription, e.g. en or de. If omitted, infer from checkpoint or dataset.")
     parser.add_argument("-sa_kv_cache", action="store_true", help="Use self-attention KV cache")
     parser.add_argument("-ca_kv_cache", action="store_true", help="Use cross-attention KV cache")
     parser.add_argument("-verbose", action="store_true", help="Prints additional info while evaluating")
@@ -164,6 +224,12 @@ def evaluate():
     else:
         print(f"Using cw model. size: {args.model} chunk size: {args.chunk_size}.")
         ckpt_path = None
+        hparams = {}
+
+    default_language = _infer_language(args.dataset_name, explicit_lang=args.lang, checkpoint_cfg=hparams)
+    default_normalizer = _get_normalizer(default_language)
+    print(f"Evaluation language: {default_language or 'auto/basic'}")
+    print(f"Default normalizer: {type(default_normalizer).__name__}")
 
     # 1. Load Model
     model = load_streaming_model(
@@ -206,18 +272,24 @@ def evaluate():
     for _, row in tqdm(df.iterrows(), total=len(df)):
         wav_path = _resolve_csv_relative_path(csv_path, row["wav_path"])
         tg_path = _resolve_csv_relative_path(csv_path, row["tg_path"])
+        row_language = (
+            _canonicalize_language(row["lang"])
+            if args.multilingual and "lang" in row and pd.notna(row["lang"])
+            else default_language
+        )
+        normalizer = _get_normalizer(row_language)
 
         audio_duration = librosa.get_duration(path=wav_path)
         total_audio_duration_sec += audio_duration
 
         gt_words = extract_words_and_times_from_tg(tg_path)
-        reference_text = " ".join([w["word"] for w in gt_words]).strip().lower()
+        reference_text = _normalize_for_eval(" ".join([w["word"] for w in gt_words]), normalizer)
 
         results = transcribe(
             model=model,
             wav_file=wav_path,
             simulate_stream=True,
-            language="en" if not args.multilingual else "auto",
+            language=row_language if row_language else ("auto" if args.multilingual else "en"),
             beam_size=args.beam_size,
             temperature=0,
             ca_kv_cache=args.ca_kv_cache,
@@ -226,39 +298,40 @@ def evaluate():
         )
 
         for step, res in enumerate(results):
-            hyp_text = res.text.strip().lower()
+            hyp_text = _normalize_for_eval(res.text, normalizer)
 
             p_latency = getattr(res, "processing_time", 0.0)
             all_chunk_latencies.append(p_latency)
             total_processing_time_sec += p_latency
 
             audio_time_rho = (step + 1) * chunk_duration_sec
-            gt_text_rho = get_gt_prefix_at_time(gt_words, audio_time_rho).lower()
+            gt_text_rho = _normalize_for_eval(get_gt_prefix_at_time(gt_words, audio_time_rho), normalizer)
 
             i, d, s, c = calculate_idsc(gt_text_rho, hyp_text)
             global_rwer_num += (i + d + s)
             global_rwer_den += (c + d + s)
 
             real_time_tau = audio_time_rho + p_latency
-            gt_text_tau = get_gt_prefix_at_time(gt_words, real_time_tau).lower()
+            gt_text_tau = _normalize_for_eval(get_gt_prefix_at_time(gt_words, real_time_tau), normalizer)
 
             i_a, d_a, s_a, c_a = calculate_idsc(gt_text_tau, hyp_text)
             global_arwer_num += (i_a + d_a + s_a)
             global_arwer_den += (c_a + d_a + s_a)
 
         predicted_text = results[-1].text if results else ""
-        predictions.append(predicted_text.strip().lower())
+        normalized_prediction = _normalize_for_eval(predicted_text, normalizer)
+        predictions.append(normalized_prediction)
         references.append(reference_text)
 
         # count IDS once per sample, using final hypothesis vs full reference
-        i_f, d_f, s_f, c_f = calculate_idsc(reference_text, predicted_text)
+        i_f, d_f, s_f, c_f = calculate_idsc(reference_text, normalized_prediction)
         global_wer_i += i_f
         global_wer_d += d_f
         global_wer_s += s_f
         global_wer_c += c_f
 
         if args.verbose:
-            print("Pred: " + predicted_text)
+            print("Pred: " + normalized_prediction)
             print("Label:" + reference_text)
             print(f"I={i_f}, D={d_f}, S={s_f}, C={c_f}")
             print("-" * 30)
