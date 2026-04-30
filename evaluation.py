@@ -243,6 +243,49 @@ def calculate_word_instability(results, normalizer):
     return changed_word_count, total_word_count
 
 
+def calculate_word_instability_with_suffix_tolerance(results, normalizer, suffix_tolerance: int = 0):
+    """
+    Count revised words while ignoring changes inside the trailing
+    `suffix_tolerance` words of the previous hypothesis.
+    """
+    normalized_hypotheses = [
+        _normalize_for_eval(getattr(res, "text", ""), normalizer).split()
+        for res in results
+    ]
+
+    if not normalized_hypotheses:
+        return 0, 0
+
+    suffix_tolerance = max(0, int(suffix_tolerance))
+    changed_word_count = 0
+    previous_words = normalized_hypotheses[0]
+
+    for current_words in normalized_hypotheses[1:]:
+        common_prefix_len = 0
+        for prev_word, curr_word in zip(previous_words, current_words):
+            if prev_word != curr_word:
+                break
+            common_prefix_len += 1
+
+        countable_previous_len = max(0, len(previous_words) - suffix_tolerance)
+        changed_word_count += max(0, countable_previous_len - common_prefix_len)
+        previous_words = current_words
+
+    total_word_count = len(normalized_hypotheses[-1])
+    return changed_word_count, total_word_count
+
+
+def _format_wir_summary(wir_stats_by_n: dict[int, dict[str, int | float]]) -> str:
+    summary_parts = []
+    for suffix_tolerance in sorted(wir_stats_by_n):
+        stats = wir_stats_by_n[suffix_tolerance]
+        summary_parts.append(
+            f"n={suffix_tolerance}: {stats['wir'] * 100:.2f}% "
+            f"({stats['changed_words']}/{stats['total_words']})"
+        )
+    return " | ".join(summary_parts)
+
+
 def evaluate():
     parser = argparse.ArgumentParser(description="Evaluate CarelessWhisper WER on a dataset")
 
@@ -262,6 +305,7 @@ def evaluate():
     parser.add_argument("--beam_size", type=int, default=5, help="Beam size during inference.")
     parser.add_argument("--lang", type=str, default=None, help="Language code for normalization/transcription, e.g. en or de. If omitted, infer from checkpoint or dataset.")
     parser.add_argument("--strict_k", type=int, default=2, help="Max word correction distance for strict WER.")
+    parser.add_argument("--wir_n", type=int, nargs="*", default=[], help="Additional WIR suffix tolerances to evaluate, e.g. --wir_n 0 1 2. n means the last n words are ignored when counting WIR changes.")
     parser.add_argument("-sa_kv_cache", action="store_true", help="Use self-attention KV cache")
     parser.add_argument("-ca_kv_cache", action="store_true", help="Use cross-attention KV cache")
     parser.add_argument("-verbose", action="store_true", help="Prints additional info while evaluating")
@@ -288,8 +332,12 @@ def evaluate():
 
     default_language = _infer_language(args.dataset_name, explicit_lang=args.lang, checkpoint_cfg=hparams)
     default_normalizer = _get_normalizer(default_language)
+    wir_suffix_tolerances = sorted({0, *args.wir_n})
+    if any(n < 0 for n in wir_suffix_tolerances):
+        raise ValueError("--wir_n values must be non-negative integers.")
     print(f"Evaluation language: {default_language or 'auto/basic'}")
     print(f"Default normalizer: {type(default_normalizer).__name__}")
+    print(f"WIR suffix tolerances: {wir_suffix_tolerances}")
 
     # 1. Load Model
     model = load_streaming_model(
@@ -319,7 +367,10 @@ def evaluate():
     global_arwer_num, global_arwer_den = 0, 0
     global_wer_i, global_wer_d, global_wer_s, global_wer_c = 0, 0, 0, 0
     global_strict_wer_i, global_strict_wer_d, global_strict_wer_s, global_strict_wer_c = 0, 0, 0, 0
-    global_wir_changes, global_wir_total_words = 0, 0
+    global_wir_counts = {
+        suffix_tolerance: {"changed_words": 0, "total_words": 0}
+        for suffix_tolerance in wir_suffix_tolerances
+    }
 
     all_chunk_latencies = []
     total_audio_duration_sec = 0.0
@@ -384,12 +435,18 @@ def evaluate():
         predicted_text = results[-1].text if results else ""
         normalized_prediction = _normalize_for_eval(predicted_text, normalizer)
         strict_prediction = _build_strict_word_buffer(results, normalizer, args.strict_k)
-        wir_changes, wir_total_words = calculate_word_instability(results, normalizer)
+        sample_wir_counts = {
+            suffix_tolerance: calculate_word_instability_with_suffix_tolerance(
+                results, normalizer, suffix_tolerance=suffix_tolerance
+            )
+            for suffix_tolerance in wir_suffix_tolerances
+        }
         predictions.append(normalized_prediction)
         strict_predictions.append(strict_prediction)
         references.append(reference_text)
-        global_wir_changes += wir_changes
-        global_wir_total_words += wir_total_words
+        for suffix_tolerance, (wir_changes, wir_total_words) in sample_wir_counts.items():
+            global_wir_counts[suffix_tolerance]["changed_words"] += wir_changes
+            global_wir_counts[suffix_tolerance]["total_words"] += wir_total_words
 
         # count IDS once per sample, using final hypothesis vs full reference
         i_f, d_f, s_f, c_f = calculate_idsc(reference_text, normalized_prediction)
@@ -409,7 +466,14 @@ def evaluate():
             print("Strict Pred: " + strict_prediction)
             print("Label:" + reference_text)
             print(f"I={i_f}, D={d_f}, S={s_f}, C={c_f}")
-            print(f"WIR changes={wir_changes}, total_words={wir_total_words}")
+            print(
+                "WIR: "
+                + ", ".join(
+                    f"n={suffix_tolerance} changes={sample_wir_counts[suffix_tolerance][0]} "
+                    f"total_words={sample_wir_counts[suffix_tolerance][1]}"
+                    for suffix_tolerance in wir_suffix_tolerances
+                )
+            )
             print("-" * 30)
 
     # 4. Final Aggregated Metric Calculation
@@ -417,7 +481,16 @@ def evaluate():
     strict_wer = jiwer.wer(references, strict_predictions) if references else 0
     rwer = global_rwer_num / global_rwer_den if global_rwer_den > 0 else 0
     arwer = global_arwer_num / global_arwer_den if global_arwer_den > 0 else 0
-    wir = global_wir_changes / global_wir_total_words if global_wir_total_words > 0 else 0
+    wir_stats_by_n = {}
+    for suffix_tolerance, counts in global_wir_counts.items():
+        total_words = counts["total_words"]
+        changed_words = counts["changed_words"]
+        wir_stats_by_n[suffix_tolerance] = {
+            "changed_words": int(changed_words),
+            "total_words": int(total_words),
+            "wir": float(changed_words / total_words if total_words > 0 else 0),
+        }
+    wir = wir_stats_by_n[0]["wir"]
 
     avg_latency = np.mean(all_chunk_latencies) if all_chunk_latencies else 0
     rtf = total_processing_time_sec / total_audio_duration_sec if total_audio_duration_sec > 0 else 0
@@ -451,8 +524,10 @@ def evaluate():
         "rwer": float(rwer),
         "arwer": float(arwer),
         "wir": float(wir),
-        "wir_changed_words": int(global_wir_changes),
-        "wir_total_words": int(global_wir_total_words),
+        "wir_changed_words": int(wir_stats_by_n[0]["changed_words"]),
+        "wir_total_words": int(wir_stats_by_n[0]["total_words"]),
+        "wir_n_values": " ".join(str(n) for n in wir_suffix_tolerances),
+        "wir_summary": _format_wir_summary(wir_stats_by_n),
         "wer_insertions": int(global_wer_i),
         "wer_deletions": int(global_wer_d),
         "wer_substitutions": int(global_wer_s),

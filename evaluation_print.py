@@ -37,6 +37,16 @@ def _fmt_latency_ms(value) -> str:
     return f"{_to_float(value):.1f} ms"
 
 
+def _format_wir_display(row: dict) -> str:
+    wir_summary = str(row.get("wir_summary", "") or "").strip()
+    if wir_summary:
+        return wir_summary
+    return (
+        f"n=0: {_fmt_percent(row.get('wir'))} "
+        f"({_to_int(row.get('wir_changed_words'))}/{_to_int(row.get('wir_total_words'))})"
+    )
+
+
 def _format_row(row: dict) -> str:
     lines = []
     lines.append("=" * 30)
@@ -80,9 +90,7 @@ def _format_row(row: dict) -> str:
 
     lines.append(f"RWER:          {_fmt_percent(row.get('rwer'))}")
     lines.append(f"ARWER:         {_fmt_percent(row.get('arwer'))}")
-    lines.append(f"WIR:           {_fmt_percent(row.get('wir'))}")
-    lines.append(f"WIR Changes:   {_to_int(row.get('wir_changed_words'))}")
-    lines.append(f"WIR Words:     {_to_int(row.get('wir_total_words'))}")
+    lines.append(f"WIR:           {_format_wir_display(row)}")
     lines.append("-" * 20)
     lines.append(f"Avg Latency:   {_fmt_latency_ms(row.get('avg_latency_ms'))}")
     lines.append(f"RTF:           {_to_float(row.get('rtf')):.4f}")
