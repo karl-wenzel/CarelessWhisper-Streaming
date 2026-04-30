@@ -80,6 +80,9 @@ def _format_row(row: dict) -> str:
 
     lines.append(f"RWER:          {_fmt_percent(row.get('rwer'))}")
     lines.append(f"ARWER:         {_fmt_percent(row.get('arwer'))}")
+    lines.append(f"WIR:           {_fmt_percent(row.get('wir'))}")
+    lines.append(f"WIR Changes:   {_to_int(row.get('wir_changed_words'))}")
+    lines.append(f"WIR Words:     {_to_int(row.get('wir_total_words'))}")
     lines.append("-" * 20)
     lines.append(f"Avg Latency:   {_fmt_latency_ms(row.get('avg_latency_ms'))}")
     lines.append(f"RTF:           {_to_float(row.get('rtf')):.4f}")

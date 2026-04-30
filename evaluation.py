@@ -209,6 +209,40 @@ def _build_strict_word_buffer(results, normalizer, correction_distance: int = 2)
     return " ".join(strict_words)
 
 
+def calculate_word_instability(results, normalizer):
+    """
+    Count how many previously emitted words get revised in later predictions.
+
+    For each pair of consecutive streaming hypotheses, we find their longest
+    common prefix in word space. Every previously emitted word beyond that
+    prefix is treated as a revision event. This lets the same final word accrue
+    multiple changes over time if the hypothesis keeps getting rewritten.
+    """
+    normalized_hypotheses = [
+        _normalize_for_eval(getattr(res, "text", ""), normalizer).split()
+        for res in results
+    ]
+
+    if not normalized_hypotheses:
+        return 0, 0
+
+    changed_word_count = 0
+    previous_words = normalized_hypotheses[0]
+
+    for current_words in normalized_hypotheses[1:]:
+        common_prefix_len = 0
+        for prev_word, curr_word in zip(previous_words, current_words):
+            if prev_word != curr_word:
+                break
+            common_prefix_len += 1
+
+        changed_word_count += max(0, len(previous_words) - common_prefix_len)
+        previous_words = current_words
+
+    total_word_count = len(normalized_hypotheses[-1])
+    return changed_word_count, total_word_count
+
+
 def evaluate():
     parser = argparse.ArgumentParser(description="Evaluate CarelessWhisper WER on a dataset")
 
@@ -285,6 +319,7 @@ def evaluate():
     global_arwer_num, global_arwer_den = 0, 0
     global_wer_i, global_wer_d, global_wer_s, global_wer_c = 0, 0, 0, 0
     global_strict_wer_i, global_strict_wer_d, global_strict_wer_s, global_strict_wer_c = 0, 0, 0, 0
+    global_wir_changes, global_wir_total_words = 0, 0
 
     all_chunk_latencies = []
     total_audio_duration_sec = 0.0
@@ -349,9 +384,12 @@ def evaluate():
         predicted_text = results[-1].text if results else ""
         normalized_prediction = _normalize_for_eval(predicted_text, normalizer)
         strict_prediction = _build_strict_word_buffer(results, normalizer, args.strict_k)
+        wir_changes, wir_total_words = calculate_word_instability(results, normalizer)
         predictions.append(normalized_prediction)
         strict_predictions.append(strict_prediction)
         references.append(reference_text)
+        global_wir_changes += wir_changes
+        global_wir_total_words += wir_total_words
 
         # count IDS once per sample, using final hypothesis vs full reference
         i_f, d_f, s_f, c_f = calculate_idsc(reference_text, normalized_prediction)
@@ -371,6 +409,7 @@ def evaluate():
             print("Strict Pred: " + strict_prediction)
             print("Label:" + reference_text)
             print(f"I={i_f}, D={d_f}, S={s_f}, C={c_f}")
+            print(f"WIR changes={wir_changes}, total_words={wir_total_words}")
             print("-" * 30)
 
     # 4. Final Aggregated Metric Calculation
@@ -378,6 +417,7 @@ def evaluate():
     strict_wer = jiwer.wer(references, strict_predictions) if references else 0
     rwer = global_rwer_num / global_rwer_den if global_rwer_den > 0 else 0
     arwer = global_arwer_num / global_arwer_den if global_arwer_den > 0 else 0
+    wir = global_wir_changes / global_wir_total_words if global_wir_total_words > 0 else 0
 
     avg_latency = np.mean(all_chunk_latencies) if all_chunk_latencies else 0
     rtf = total_processing_time_sec / total_audio_duration_sec if total_audio_duration_sec > 0 else 0
@@ -410,6 +450,9 @@ def evaluate():
         "strict_wer": float(strict_wer),
         "rwer": float(rwer),
         "arwer": float(arwer),
+        "wir": float(wir),
+        "wir_changed_words": int(global_wir_changes),
+        "wir_total_words": int(global_wir_total_words),
         "wer_insertions": int(global_wer_i),
         "wer_deletions": int(global_wer_d),
         "wer_substitutions": int(global_wer_s),
