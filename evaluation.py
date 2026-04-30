@@ -184,6 +184,29 @@ def calculate_idsc(ref, hyp):
     return out.insertions, out.deletions, out.substitutions, out.hits
 
 
+def _build_strict_word_buffer(results, normalizer, correction_distance: int = 2):
+    """
+    Build a constrained word buffer from streaming hypotheses.
+
+    After each forward pass, the model may only revise the last
+    `correction_distance` words of the current buffer.
+    """
+    correction_distance = max(0, int(correction_distance))
+    strict_words = []
+
+    for res in results:
+        candidate_words = _normalize_for_eval(getattr(res, "text", ""), normalizer).split()
+
+        if not strict_words:
+            strict_words = candidate_words
+            continue
+
+        frozen_prefix_len = max(0, len(strict_words) - correction_distance)
+        strict_words = strict_words[:frozen_prefix_len] + candidate_words[frozen_prefix_len:]
+
+    return " ".join(strict_words)
+
+
 def evaluate():
     parser = argparse.ArgumentParser(description="Evaluate CarelessWhisper WER on a dataset")
 
@@ -202,6 +225,7 @@ def evaluate():
     parser.add_argument("--dataset_partition", type=str, default="test", help="The partition of the dataset that will be used for evaluation. 'test' by default.")
     parser.add_argument("--beam_size", type=int, default=5, help="Beam size during inference.")
     parser.add_argument("--lang", type=str, default=None, help="Language code for normalization/transcription, e.g. en or de. If omitted, infer from checkpoint or dataset.")
+    parser.add_argument("--strict_k", type=int, default=2, help="Max word correction distance for strict WER.")
     parser.add_argument("-sa_kv_cache", action="store_true", help="Use self-attention KV cache")
     parser.add_argument("-ca_kv_cache", action="store_true", help="Use cross-attention KV cache")
     parser.add_argument("-verbose", action="store_true", help="Prints additional info while evaluating")
@@ -258,11 +282,13 @@ def evaluate():
     global_rwer_num, global_rwer_den = 0, 0
     global_arwer_num, global_arwer_den = 0, 0
     global_wer_i, global_wer_d, global_wer_s, global_wer_c = 0, 0, 0, 0
+    global_strict_wer_i, global_strict_wer_d, global_strict_wer_s, global_strict_wer_c = 0, 0, 0, 0
 
     all_chunk_latencies = []
     total_audio_duration_sec = 0.0
     total_processing_time_sec = 0.0
     predictions, references = [], []
+    strict_predictions = []
 
     chunk_duration_sec = model.encoder.gran * 0.02
     print(f"model chunk size (s): {chunk_duration_sec}")
@@ -320,7 +346,9 @@ def evaluate():
 
         predicted_text = results[-1].text if results else ""
         normalized_prediction = _normalize_for_eval(predicted_text, normalizer)
+        strict_prediction = _build_strict_word_buffer(results, normalizer, args.strict_k)
         predictions.append(normalized_prediction)
+        strict_predictions.append(strict_prediction)
         references.append(reference_text)
 
         # count IDS once per sample, using final hypothesis vs full reference
@@ -330,14 +358,22 @@ def evaluate():
         global_wer_s += s_f
         global_wer_c += c_f
 
+        i_strict, d_strict, s_strict, c_strict = calculate_idsc(reference_text, strict_prediction)
+        global_strict_wer_i += i_strict
+        global_strict_wer_d += d_strict
+        global_strict_wer_s += s_strict
+        global_strict_wer_c += c_strict
+
         if args.verbose:
             print("Pred: " + normalized_prediction)
+            print("Strict Pred: " + strict_prediction)
             print("Label:" + reference_text)
             print(f"I={i_f}, D={d_f}, S={s_f}, C={c_f}")
             print("-" * 30)
 
     # 4. Final Aggregated Metric Calculation
     wer = jiwer.wer(references, predictions) if references else 0
+    strict_wer = jiwer.wer(references, strict_predictions) if references else 0
     rwer = global_rwer_num / global_rwer_den if global_rwer_den > 0 else 0
     arwer = global_arwer_num / global_arwer_den if global_arwer_den > 0 else 0
 
@@ -353,6 +389,8 @@ def evaluate():
             "partition": args.dataset_partition,
             "fraction": args.dataset_fraction,
             "wer": float(wer),
+            "strict_wer": float(strict_wer),
+            "strict_k": int(args.strict_k),
             "rwer": float(rwer),
             "arwer": float(arwer),
             "avg_latency_ms": float(avg_latency * 1000),
@@ -373,6 +411,7 @@ def evaluate():
     if ckpt_path != None:
         print(f"CHECKPOINT:    {ckpt_path.name}")
     print(f"WER:           {wer * 100:.2f}%")
+    print(f"STRICT WER:    {strict_wer * 100:.2f}% (k={args.strict_k})")
 
     print("\n=== Final WER IDS Breakdown ===")
     print(f"Insertions:    {global_wer_i}")
@@ -380,6 +419,13 @@ def evaluate():
     print(f"Substitutions: {global_wer_s}")
     print(f"Correct:       {global_wer_c}")
     print(f"Total errors:  {global_wer_i + global_wer_d + global_wer_s}")
+
+    print("\n=== Final Strict WER IDS Breakdown ===")
+    print(f"Insertions:    {global_strict_wer_i}")
+    print(f"Deletions:     {global_strict_wer_d}")
+    print(f"Substitutions: {global_strict_wer_s}")
+    print(f"Correct:       {global_strict_wer_c}")
+    print(f"Total errors:  {global_strict_wer_i + global_strict_wer_d + global_strict_wer_s}")
 
     print(f"RWER:          {rwer * 100:.2f}%")
     print(f"ARWER:         {arwer * 100:.2f}%")
