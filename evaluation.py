@@ -2,7 +2,6 @@ import argparse
 import os
 import re
 import time
-import json
 import pandas as pd
 import torch
 import jiwer
@@ -20,8 +19,11 @@ from careless_whisper_stream.normalizers import (
 )
 from careless_whisper_stream.streaming_transcribe import transcribe
 from training_code.ds_dict import ds_paths
+from evaluation_print import print_latest_rows
+from evaluation_saving import append_evaluation_row
 
 ckpt_root = f"{os.environ.get('HOME')}/ma/data/models/ckpts"
+evaluation_file = f"{os.environ.get('HOME')}/ma/data/evaluation.csv"
 
 
 def _extract_epoch_from_name(path: Path) -> int:
@@ -380,59 +382,52 @@ def evaluate():
     avg_latency = np.mean(all_chunk_latencies) if all_chunk_latencies else 0
     rtf = total_processing_time_sec / total_audio_duration_sec if total_audio_duration_sec > 0 else 0
 
-    if not args.cw: # can only save stats if evaluating local model, as we then have a target to save them to
-        stats = {
-            "model_run": args.model,
-            "checkpoint": ckpt_path.name,
-            "checkpoint_path": str(ckpt_path),
-            "dataset": args.dataset_name,
-            "partition": args.dataset_partition,
-            "fraction": args.dataset_fraction,
-            "wer": float(wer),
-            "strict_wer": float(strict_wer),
-            "strict_k": int(args.strict_k),
-            "rwer": float(rwer),
-            "arwer": float(arwer),
-            "avg_latency_ms": float(avg_latency * 1000),
-            "rtf": float(rtf),
-            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-        }
+    stats = {
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "evaluation_file": evaluation_file,
+        "model_name": args.model,
+        "model_run": args.model,
+        "base_model_name": args.model if args.cw else base_model_name,
+        "is_cw_model": bool(args.cw),
+        "checkpoint": "" if ckpt_path is None else ckpt_path.name,
+        "checkpoint_epoch": "" if ckpt_path is None else int(_extract_epoch_from_name(ckpt_path)),
+        "checkpoint_path": "" if ckpt_path is None else str(ckpt_path),
+        "dataset": args.dataset_name,
+        "dataset_csv": str(csv_path),
+        "partition": args.dataset_partition,
+        "fraction": float(args.dataset_fraction),
+        "sample_count": int(len(df)),
+        "chunk_size": int(args.chunk_size),
+        "chunk_duration_sec": float(chunk_duration_sec),
+        "beam_size": int(args.beam_size),
+        "strict_k": int(args.strict_k),
+        "language": default_language or "",
+        "multilingual": bool(args.multilingual),
+        "device": args.device,
+        "sa_kv_cache": bool(args.sa_kv_cache),
+        "ca_kv_cache": bool(args.ca_kv_cache),
+        "wer": float(wer),
+        "strict_wer": float(strict_wer),
+        "rwer": float(rwer),
+        "arwer": float(arwer),
+        "wer_insertions": int(global_wer_i),
+        "wer_deletions": int(global_wer_d),
+        "wer_substitutions": int(global_wer_s),
+        "wer_correct": int(global_wer_c),
+        "strict_wer_insertions": int(global_strict_wer_i),
+        "strict_wer_deletions": int(global_strict_wer_d),
+        "strict_wer_substitutions": int(global_strict_wer_s),
+        "strict_wer_correct": int(global_strict_wer_c),
+        "avg_latency_ms": float(avg_latency * 1000),
+        "rtf": float(rtf),
+        "total_audio_duration_sec": float(total_audio_duration_sec),
+        "total_processing_time_sec": float(total_processing_time_sec),
+    }
 
-        # Always save next to the run directory now
-        save_path = ckpt_path.parent.parent / "evaluation.json"
-        with open(save_path, "w") as f:
-            json.dump(stats, f, indent=4)
-        print(f"Stats saved to: {save_path}")
-
-    print("\n" + "=" * 30)
-    print(f"RESULTS FOR:")
-    print(f"MODEL: {args.model} on DATASET: {args.dataset_name}")
-    print(f"PARTITION: {args.dataset_partition} % SAMPLES: {args.dataset_fraction}")
-    if ckpt_path != None:
-        print(f"CHECKPOINT:    {ckpt_path.name}")
-    print(f"WER:           {wer * 100:.2f}%")
-    print(f"STRICT WER:    {strict_wer * 100:.2f}% (k={args.strict_k})")
-
-    print("\n=== Final WER IDS Breakdown ===")
-    print(f"Insertions:    {global_wer_i}")
-    print(f"Deletions:     {global_wer_d}")
-    print(f"Substitutions: {global_wer_s}")
-    print(f"Correct:       {global_wer_c}")
-    print(f"Total errors:  {global_wer_i + global_wer_d + global_wer_s}")
-
-    print("\n=== Final Strict WER IDS Breakdown ===")
-    print(f"Insertions:    {global_strict_wer_i}")
-    print(f"Deletions:     {global_strict_wer_d}")
-    print(f"Substitutions: {global_strict_wer_s}")
-    print(f"Correct:       {global_strict_wer_c}")
-    print(f"Total errors:  {global_strict_wer_i + global_strict_wer_d + global_strict_wer_s}")
-
-    print(f"RWER:          {rwer * 100:.2f}%")
-    print(f"ARWER:         {arwer * 100:.2f}%")
-    print("-" * 20)
-    print(f"Avg Latency:   {avg_latency * 1000:.1f} ms")
-    print(f"RTF:           {rtf:.4f}")
-    print("=" * 30)
+    append_evaluation_row(evaluation_file, stats)
+    print(f"Stats saved to: {evaluation_file}")
+    print()
+    print_latest_rows(evaluation_file, row_count=1)
 
 
 if __name__ == "__main__":
