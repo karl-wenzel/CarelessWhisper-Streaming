@@ -1030,6 +1030,7 @@ class DecodingTask:
         if self.options.fp16:
             mel = mel.half()
 
+        encoder_cache_offset = self._get_encoder_cache_offset()
         audio_features: Tensor = self.model.encoder(mel, kv_cache=self.enc_kv_cache, mask=None)
         
         if audio_features.dtype != (
@@ -1044,20 +1045,27 @@ class DecodingTask:
             return audio_features
 
         # update audio_features
-        end_index = (self.mel.shape[-1] // 2) - 1
-        
-        if end_index == (self.model.encoder.gran * (1 + self.model.encoder.extra_gran_blocks)):
-            start_index = 0
-        else:
-            start_index = end_index - self.model.encoder.gran
-        
-        if start_index % self.model.encoder.gran != 0:
-            modolu_res = start_index % self.model.encoder.gran
-            steps = self.model.encoder.gran - modolu_res
-            start_index += steps
-            end_index = start_index + self.model.encoder.gran
-
+        start_index = encoder_cache_offset
+        end_index = start_index + audio_features.shape[1]
         self.audio_features[:, start_index:end_index] = audio_features
+
+    def _get_encoder_cache_offset(self) -> int:
+        """
+        Return the number of encoder frames already present in the KV cache.
+
+        The first streaming encoder call emits the initialization window
+        (gran + lookahead), while later calls emit one granule. Using the cache
+        length keeps the feature buffer aligned even when the accumulated mel
+        length lands exactly on a boundary.
+        """
+        if not self.enc_kv_cache:
+            return 0
+
+        cached_tensor = next(
+            (value for value in self.enc_kv_cache.values() if torch.is_tensor(value)),
+            None,
+        )
+        return 0 if cached_tensor is None else cached_tensor.shape[1]
 
     def _detect_language(self, audio_features: Tensor, tokens: Tensor):
         languages = [self.options.language] * audio_features.shape[0]
