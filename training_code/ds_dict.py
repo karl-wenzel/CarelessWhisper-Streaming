@@ -66,4 +66,10 @@ ds_paths = {
             'test': "/mtec/local/LibriSpeech_aligned/precomputed/test-clean/manifest.csv",
         },
     },
+
+    'AMI': {
+        'train': "/mtec/local/AMI/csv/train.csv",
+        'val': "/mtec/local/AMI/csv/val.csv",
+        'test': "/mtec/local/AMI/csv/test.csv",
+    },
 }
