@@ -47,6 +47,13 @@ def _format_wir_display(row: dict) -> str:
     )
 
 
+def _format_strict_display(row: dict) -> str:
+    strict_summary = str(row.get("strict_summary", "") or "").strip()
+    if strict_summary:
+        return strict_summary
+    return f"k={_to_int(row.get('strict_k'))}: {_fmt_percent(row.get('strict_wer'))}"
+
+
 def _format_row(row: dict) -> str:
     lines = []
     lines.append("=" * 30)
@@ -64,6 +71,7 @@ def _format_row(row: dict) -> str:
     lines.append(f"CHUNK SIZE:    {row.get('chunk_size', '')}")
     lines.append(f"MODE:          {'cw' if str(row.get('is_cw_model', '')).lower() == 'true' else 'local'}")
     lines.append(f"WER:           {_fmt_percent(row.get('wer'))}")
+    lines.append(f"STRICT WERs:   {_format_strict_display(row)}")
     lines.append(
         f"STRICT WER:    {_fmt_percent(row.get('strict_wer'))} (k={_to_int(row.get('strict_k'))})"
     )

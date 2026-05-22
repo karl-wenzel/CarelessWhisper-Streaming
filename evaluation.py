@@ -286,6 +286,20 @@ def _format_wir_summary(wir_stats_by_n: dict[int, dict[str, int | float]]) -> st
     return " | ".join(summary_parts)
 
 
+def _format_strict_summary(
+    strict_wer_by_k: dict[int, float],
+    strict_counts_by_k: dict[int, dict[str, int]],
+) -> str:
+    summary_parts = []
+    for strict_k in sorted(strict_wer_by_k):
+        counts = strict_counts_by_k[strict_k]
+        summary_parts.append(
+            f"k={strict_k}: {strict_wer_by_k[strict_k] * 100:.2f}% "
+            f"(I/D/S/C={counts['i']}/{counts['d']}/{counts['s']}/{counts['c']})"
+        )
+    return " | ".join(summary_parts)
+
+
 def evaluate():
     parser = argparse.ArgumentParser(description="Evaluate CarelessWhisper WER on a dataset")
 
@@ -304,7 +318,13 @@ def evaluate():
     parser.add_argument("--dataset_partition", type=str, default="test", help="The partition of the dataset that will be used for evaluation. 'test' by default.")
     parser.add_argument("--beam_size", type=int, default=5, help="Beam size during inference.")
     parser.add_argument("--lang", type=str, default=None, help="Language code for normalization/transcription, e.g. en or de. If omitted, infer from checkpoint or dataset.")
-    parser.add_argument("--strict_k", type=int, default=2, help="Max word correction distance for strict WER.")
+    parser.add_argument(
+        "--strict_k",
+        type=int,
+        nargs="*",
+        default=[2],
+        help="Word correction distances to evaluate for strict WER, e.g. --strict_k 0 1 2.",
+    )
     parser.add_argument("--wir_n", type=int, nargs="*", default=[], help="Additional WIR suffix tolerances to evaluate, e.g. --wir_n 0 1 2. n means the last n words are ignored when counting WIR changes.")
     parser.add_argument("-sa_kv_cache", action="store_true", help="Use self-attention KV cache")
     parser.add_argument("-ca_kv_cache", action="store_true", help="Use cross-attention KV cache")
@@ -332,11 +352,20 @@ def evaluate():
 
     default_language = _infer_language(args.dataset_name, explicit_lang=args.lang, checkpoint_cfg=hparams)
     default_normalizer = _get_normalizer(default_language)
+    if len(args.strict_k) == 0:
+        raise ValueError(
+            "--strict_k was provided without values. Provide one or more non-negative integers, e.g. --strict_k 0 1 2."
+        )
+    # Normalize to stable unique ordering so CSV/report comparisons stay deterministic across repeated runs.
+    strict_k_values = sorted({int(k) for k in args.strict_k})
+    if any(k < 0 for k in strict_k_values):
+        raise ValueError("--strict_k values must be non-negative integers.")
     wir_suffix_tolerances = sorted({0, *args.wir_n})
     if any(n < 0 for n in wir_suffix_tolerances):
         raise ValueError("--wir_n values must be non-negative integers.")
     print(f"Evaluation language: {default_language or 'auto/basic'}")
     print(f"Default normalizer: {type(default_normalizer).__name__}")
+    print(f"Strict correction distances: {strict_k_values}")
     print(f"WIR suffix tolerances: {wir_suffix_tolerances}")
 
     # 1. Load Model
@@ -366,7 +395,10 @@ def evaluate():
     global_rwer_num, global_rwer_den = 0, 0
     global_arwer_num, global_arwer_den = 0, 0
     global_wer_i, global_wer_d, global_wer_s, global_wer_c = 0, 0, 0, 0
-    global_strict_wer_i, global_strict_wer_d, global_strict_wer_s, global_strict_wer_c = 0, 0, 0, 0
+    global_strict_counts = {
+        strict_k: {"i": 0, "d": 0, "s": 0, "c": 0}
+        for strict_k in strict_k_values
+    }
     global_wir_counts = {
         suffix_tolerance: {"changed_words": 0, "total_words": 0}
         for suffix_tolerance in wir_suffix_tolerances
@@ -376,7 +408,7 @@ def evaluate():
     total_audio_duration_sec = 0.0
     total_processing_time_sec = 0.0
     predictions, references = [], []
-    strict_predictions = []
+    strict_predictions_by_k = {strict_k: [] for strict_k in strict_k_values}
 
     chunk_duration_sec = model.encoder.gran * 0.02
     print(f"model chunk size (s): {chunk_duration_sec}")
@@ -434,7 +466,10 @@ def evaluate():
 
         predicted_text = results[-1].text if results else ""
         normalized_prediction = _normalize_for_eval(predicted_text, normalizer)
-        strict_prediction = _build_strict_word_buffer(results, normalizer, args.strict_k)
+        strict_predictions_for_sample = {
+            strict_k: _build_strict_word_buffer(results, normalizer, strict_k)
+            for strict_k in strict_k_values
+        }
         sample_wir_counts = {
             suffix_tolerance: calculate_word_instability_with_suffix_tolerance(
                 results, normalizer, suffix_tolerance=suffix_tolerance
@@ -442,7 +477,8 @@ def evaluate():
             for suffix_tolerance in wir_suffix_tolerances
         }
         predictions.append(normalized_prediction)
-        strict_predictions.append(strict_prediction)
+        for strict_k, strict_prediction in strict_predictions_for_sample.items():
+            strict_predictions_by_k[strict_k].append(strict_prediction)
         references.append(reference_text)
         for suffix_tolerance, (wir_changes, wir_total_words) in sample_wir_counts.items():
             global_wir_counts[suffix_tolerance]["changed_words"] += wir_changes
@@ -455,15 +491,22 @@ def evaluate():
         global_wer_s += s_f
         global_wer_c += c_f
 
-        i_strict, d_strict, s_strict, c_strict = calculate_idsc(reference_text, strict_prediction)
-        global_strict_wer_i += i_strict
-        global_strict_wer_d += d_strict
-        global_strict_wer_s += s_strict
-        global_strict_wer_c += c_strict
+        for strict_k, strict_prediction in strict_predictions_for_sample.items():
+            i_strict, d_strict, s_strict, c_strict = calculate_idsc(reference_text, strict_prediction)
+            global_strict_counts[strict_k]["i"] += i_strict
+            global_strict_counts[strict_k]["d"] += d_strict
+            global_strict_counts[strict_k]["s"] += s_strict
+            global_strict_counts[strict_k]["c"] += c_strict
 
         if args.verbose:
             print("Pred: " + normalized_prediction)
-            print("Strict Pred: " + strict_prediction)
+            print(
+                "Strict Preds: "
+                + " | ".join(
+                    f"k={strict_k}: {strict_predictions_for_sample[strict_k]}"
+                    for strict_k in strict_k_values
+                )
+            )
             print("Label:" + reference_text)
             print(f"I={i_f}, D={d_f}, S={s_f}, C={c_f}")
             print(
@@ -478,7 +521,15 @@ def evaluate():
 
     # 4. Final Aggregated Metric Calculation
     wer = jiwer.wer(references, predictions) if references else 0
-    strict_wer = jiwer.wer(references, strict_predictions) if references else 0
+    strict_wer_by_k = {
+        strict_k: jiwer.wer(references, strict_predictions_by_k[strict_k]) if references else 0
+        for strict_k in strict_k_values
+    }
+    # Keep legacy strict_* columns tied to one primary k for backward-compatible CSV consumers.
+    primary_strict_k = strict_k_values[0]
+    primary_strict_counts = global_strict_counts[primary_strict_k]
+    strict_wer = strict_wer_by_k[primary_strict_k]
+    strict_summary = _format_strict_summary(strict_wer_by_k, global_strict_counts)
     rwer = global_rwer_num / global_rwer_den if global_rwer_den > 0 else 0
     arwer = global_arwer_num / global_arwer_den if global_arwer_den > 0 else 0
     wir_stats_by_n = {}
@@ -513,7 +564,9 @@ def evaluate():
         "chunk_size": int(args.chunk_size),
         "chunk_duration_sec": float(chunk_duration_sec),
         "beam_size": int(args.beam_size),
-        "strict_k": int(args.strict_k),
+        "strict_k": int(primary_strict_k),
+        "strict_k_values": " ".join(str(k) for k in strict_k_values),
+        "strict_summary": strict_summary,
         "language": default_language or "",
         "multilingual": bool(args.multilingual),
         "device": args.device,
@@ -532,10 +585,10 @@ def evaluate():
         "wer_deletions": int(global_wer_d),
         "wer_substitutions": int(global_wer_s),
         "wer_correct": int(global_wer_c),
-        "strict_wer_insertions": int(global_strict_wer_i),
-        "strict_wer_deletions": int(global_strict_wer_d),
-        "strict_wer_substitutions": int(global_strict_wer_s),
-        "strict_wer_correct": int(global_strict_wer_c),
+        "strict_wer_insertions": int(primary_strict_counts["i"]),
+        "strict_wer_deletions": int(primary_strict_counts["d"]),
+        "strict_wer_substitutions": int(primary_strict_counts["s"]),
+        "strict_wer_correct": int(primary_strict_counts["c"]),
         "avg_latency_ms": float(avg_latency * 1000),
         "rtf": float(rtf),
         "total_audio_duration_sec": float(total_audio_duration_sec),
