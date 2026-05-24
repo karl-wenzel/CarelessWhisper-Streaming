@@ -72,4 +72,10 @@ ds_paths = {
         'val': "/mtec/local/AMI/csv/val.csv",
         'test': "/mtec/local/AMI/csv/test.csv",
     },
+
+    'LRS3': {
+        'train': "/mtec/local/LRS3_aligned/csv/pretrain.csv",
+        'val': "/mtec/local/LRS3_aligned/csv/trainval.csv",
+        'test': "/mtec/local/LRS3_aligned/csv/test.csv",
+    },
 }
