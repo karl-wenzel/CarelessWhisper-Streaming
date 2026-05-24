@@ -2,15 +2,50 @@ import torch
 import numpy as np
 import torch.nn.functional as F
 
+WHISPER_TEXT_CTX = 448
+WHISPER_EOT_TOKEN_ID = 50257
+
+
+def _truncate_decoder_fields(feature: dict, max_text_ctx: int = WHISPER_TEXT_CTX, eot_token_id: int = WHISPER_EOT_TOKEN_ID) -> dict:
+    dec_input_ids = torch.as_tensor(feature["dec_input_ids"], dtype=torch.long)
+    labels = torch.as_tensor(feature["labels"], dtype=torch.long)
+
+    # Requirement: keep decoder training tensors <= Whisper context to prevent positional embedding size crashes.
+    min_len = min(dec_input_ids.shape[0], labels.shape[0])
+    dec_input_ids = dec_input_ids[:min_len]
+    labels = labels[:min_len]
+
+    if min_len > max_text_ctx:
+        dec_input_ids = dec_input_ids[:max_text_ctx].clone()
+        labels = labels[:max_text_ctx].clone()
+        dec_input_ids[-1] = eot_token_id
+        labels[-1] = eot_token_id
+
+    out = dict(feature)
+    out["dec_input_ids"] = dec_input_ids
+    out["labels"] = labels
+
+    if "endpoints" in feature:
+        endpoints = torch.as_tensor(feature["endpoints"], dtype=torch.float32)[:min_len]
+        if min_len > max_text_ctx:
+            endpoints = endpoints[:max_text_ctx].clone()
+            if endpoints.shape[0] > 1:
+                endpoints[-1] = endpoints[-2] + 0.5
+        out["endpoints"] = endpoints
+
+    return out
+
+
 class WhisperDataCollatorWithPadding:
     def __call__(self, features):
+        features = [_truncate_decoder_fields(feature) for feature in features]
 
         input_ids, labels, dec_input_ids, labels_classes, unique_ids = [], [], [], [], []
         for f in features:
             input_ids.append(f["input_ids"])
-            labels.append(f["labels"])
-            dec_input_ids.append(f["dec_input_ids"])
-            labels_classes.append([int(item==50257) for item in f["labels"]])
+            labels.append(f["labels"].cpu().numpy())
+            dec_input_ids.append(f["dec_input_ids"].cpu().numpy())
+            labels_classes.append([int(item == WHISPER_EOT_TOKEN_ID) for item in f["labels"].tolist()])
             unique_ids.append(f.get("u_id", 0))
 
         input_ids = torch.concat([input_id[None, :] for input_id in input_ids])
@@ -48,6 +83,7 @@ def pad_2d_sequences(arrays: list, dim: int = 0, padding_value: int = 0) -> torc
 
 class LoRAWhisperDataCollatorWithPadding:
     def __call__(self, features):
+        features = [_truncate_decoder_fields(feature) for feature in features]
 
         input_ids = [f["input_ids"] for f in features]
         labels = [f["labels"] for f in features]

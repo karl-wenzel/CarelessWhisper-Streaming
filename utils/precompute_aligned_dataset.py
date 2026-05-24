@@ -21,6 +21,8 @@ import careless_whisper_stream.tokenizer
 from careless_whisper_stream.audio import SpectrogramStream
 from careless_whisper_stream.tokenizer import Tokenizer
 
+WHISPER_TEXT_CTX = 448
+
 
 @dataclass
 class Interval:
@@ -94,6 +96,18 @@ def build_tokens_and_endpoints(
         raise ValueError(
             f"Length mismatch: len(endpoints)={len(endpoints)}, len(labels)={len(labels)}, len(text)={len(text)}"
         )
+
+    # Requirement: keep precomputed training samples compatible with Whisper's fixed 448-token decoder context.
+    # Long aligned transcripts (e.g., LRS3) can exceed this and later crash in decoder positional embeddings.
+    if len(text) > WHISPER_TEXT_CTX:
+        text = text[:WHISPER_TEXT_CTX]
+        labels = labels[:WHISPER_TEXT_CTX]
+        endpoints = endpoints[:WHISPER_TEXT_CTX]
+
+        text[-1] = tokenizer.eot
+        labels[-1] = tokenizer.eot
+        if len(endpoints) > 1:
+            endpoints[-1] = endpoints[-2] + 0.5
 
     return text, endpoints, labels
 

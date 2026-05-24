@@ -39,6 +39,44 @@ from torch.utils.data import Dataset
 from torch import Tensor
 from tqdm import tqdm
 
+WHISPER_TEXT_CTX = 448
+WHISPER_EOT_TOKEN_ID = 50257
+
+
+def _truncate_decoder_training_tensors(
+    dec_input_ids: Tensor,
+    labels: Tensor,
+    endpoints: Tensor,
+    max_text_ctx: int = WHISPER_TEXT_CTX,
+    eot_token_id: int = WHISPER_EOT_TOKEN_ID,
+) -> tuple[Tensor, Tensor, Tensor]:
+    """
+    Keep decoder-side training tensors inside Whisper's fixed text context.
+    """
+    dec_input_ids = torch.as_tensor(dec_input_ids, dtype=torch.long)
+    labels = torch.as_tensor(labels, dtype=torch.long)
+    endpoints = torch.as_tensor(endpoints, dtype=torch.float32)
+
+    # Requirement: avoid runtime shape mismatches when long LRS3 samples exceed Whisper's 448-token text context.
+    # We enforce equal lengths first, then hard-cap to max_text_ctx and force EOT at the truncation boundary.
+    min_len = min(dec_input_ids.shape[0], labels.shape[0], endpoints.shape[0])
+    dec_input_ids = dec_input_ids[:min_len]
+    labels = labels[:min_len]
+    endpoints = endpoints[:min_len]
+
+    if min_len > max_text_ctx:
+        dec_input_ids = dec_input_ids[:max_text_ctx].clone()
+        labels = labels[:max_text_ctx].clone()
+        endpoints = endpoints[:max_text_ctx].clone()
+
+        dec_input_ids[-1] = eot_token_id
+        labels[-1] = eot_token_id
+
+        if endpoints.shape[0] > 1:
+            endpoints[-1] = endpoints[-2] + 0.5
+
+    return dec_input_ids, labels, endpoints
+
 
 def _read_manifest_csv(path: str, sep: Optional[str] = "\t") -> pd.DataFrame:
     """
@@ -110,13 +148,16 @@ class WAVsDataset(torch.utils.data.Dataset):
         text = item["raw_text"]
         text = [*self.tokenizer.sot_sequence_including_notimestamps] + self.tokenizer.encode(text)
         labels = text[1:] + [self.tokenizer.eot]
+        endpoints = [audio.shape[-1] / self.sr for _ in range(len(labels))]
 
-        # maximal context available on whisper model is 448 tokens
-        if len(labels) > 448:
-            labels = labels[:448]
-            text = text[:447] + [self.tokenizer.eot]
+        dec_input_ids, labels, endpoints = _truncate_decoder_training_tensors(
+            dec_input_ids=torch.tensor(text, dtype=torch.long),
+            labels=torch.tensor(labels, dtype=torch.long),
+            endpoints=torch.tensor(endpoints, dtype=torch.float32),
+            eot_token_id=self.tokenizer.eot,
+        )
 
-        return dict(input_ids=mel, labels=torch.tensor(labels), dec_input_ids=torch.tensor(text), endpoints=torch.tensor([audio.shape[-1] / self.sr for _ in range(len(labels))]))
+        return dict(input_ids=mel, labels=labels, dec_input_ids=dec_input_ids, endpoints=endpoints)
 
 
 @dataclass
@@ -208,13 +249,18 @@ class AlignedTextGridDataset(torch.utils.data.Dataset):
         text = [*tokenizer.sot_sequence_including_notimestamps] + tokens
         labels = text[1:] + [tokenizer.eot]
         endpoints.append(endpoints[-1] + 0.5)
-        
-        assert len(endpoints) == len(labels) == len(text)
+
+        dec_input_ids, labels, endpoints = _truncate_decoder_training_tensors(
+            dec_input_ids=torch.tensor(text, dtype=torch.long),
+            labels=torch.tensor(labels, dtype=torch.long),
+            endpoints=torch.tensor(endpoints, dtype=torch.float32),
+            eot_token_id=tokenizer.eot,
+        )
 
         return dict(input_ids=mel,
-                    dec_input_ids=torch.tensor(text),
-                    labels=torch.tensor(labels),
-                    endpoints=torch.tensor(endpoints))
+                    dec_input_ids=dec_input_ids,
+                    labels=labels,
+                    endpoints=endpoints)
 
 
 class TIMIT(torch.utils.data.Dataset):
@@ -371,13 +417,18 @@ class AlignedTextGridDatasetLMDB(torch.utils.data.Dataset):
         text = [*tokenizer.sot_sequence_including_notimestamps] + tokens
         labels = text[1:] + [tokenizer.eot]
         endpoints.append(endpoints[-1] + 0.5)
-        
-        assert len(endpoints) == len(labels) == len(text)
+
+        dec_input_ids, labels, endpoints = _truncate_decoder_training_tensors(
+            dec_input_ids=torch.tensor(text, dtype=torch.long),
+            labels=torch.tensor(labels, dtype=torch.long),
+            endpoints=torch.tensor(endpoints, dtype=torch.float32),
+            eot_token_id=tokenizer.eot,
+        )
 
         return dict(input_ids=mel,
-                    dec_input_ids=torch.tensor(text),
-                    labels=torch.tensor(labels),
-                    endpoints=torch.tensor(endpoints))
+                    dec_input_ids=dec_input_ids,
+                    labels=labels,
+                    endpoints=endpoints)
 
 ### Taken from Eyal Cohen's TEDLIUM loader ###
 
@@ -568,9 +619,15 @@ class PrecomputedAlignedDataset(torch.utils.data.Dataset):
         manifest_path, rel_pt_path = self.items[index]
         pt_path = _resolve_csv_relative_path(manifest_path, rel_pt_path)
         item = torch.load(pt_path, map_location="cpu")
+        dec_input_ids, labels, endpoints = _truncate_decoder_training_tensors(
+            dec_input_ids=item["dec_input_ids"],
+            labels=item["labels"],
+            endpoints=item["endpoints"],
+            eot_token_id=WHISPER_EOT_TOKEN_ID,
+        )
         return {
             "input_ids": item["input_ids"],
-            "dec_input_ids": item["dec_input_ids"],
-            "labels": item["labels"],
-            "endpoints": item["endpoints"],
+            "dec_input_ids": dec_input_ids,
+            "labels": labels,
+            "endpoints": endpoints,
         }
