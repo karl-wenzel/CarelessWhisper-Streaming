@@ -1,0 +1,139 @@
+import sys
+import unittest
+from unittest.mock import patch
+
+import torch
+
+import careless_whisper_stream
+from careless_whisper_stream.model import ModelDimensions
+from careless_whisper_stream.streaming_model import StreamingWhisper
+from training_code.utils import Config, parse_cmdl
+
+
+def tiny_dims(n_audio_ctx: int = 8) -> ModelDimensions:
+    return ModelDimensions(
+        n_mels=4,
+        n_audio_ctx=n_audio_ctx,
+        n_audio_state=16,
+        n_audio_head=4,
+        n_audio_layer=2,
+        n_vocab=32,
+        n_text_ctx=16,
+        n_text_state=16,
+        n_text_head=4,
+        n_text_layer=2,
+    )
+
+
+class EncoderAlibiTests(unittest.TestCase):
+    def test_default_positional_mode_is_sinusoidal(self):
+        model = StreamingWhisper(tiny_dims(), gran=2, rank=2, extra_gran_blocks=1)
+        mel = torch.randn(1, model.dims.n_mels, model.dims.n_audio_ctx * 2)
+
+        out = model.encoder(mel, index=[0, model.dims.n_audio_ctx], mask=None)
+
+        self.assertEqual(model.encoder_positional_mode, "sinusoidal")
+        self.assertEqual(model.encoder.encoder_positional_mode, "sinusoidal")
+        self.assertEqual(out.shape, (1, model.dims.n_audio_ctx, model.dims.n_audio_state))
+
+    def test_alibi_encoder_forward_shape(self):
+        model = StreamingWhisper(
+            tiny_dims(),
+            gran=2,
+            rank=2,
+            extra_gran_blocks=1,
+            encoder_positional_mode="alibi",
+        )
+        mel = torch.randn(1, model.dims.n_mels, model.dims.n_audio_ctx * 2)
+
+        out = model.encoder(mel, index=[0, model.dims.n_audio_ctx], mask=None)
+
+        self.assertEqual(model.encoder.encoder_positional_mode, "alibi")
+        self.assertEqual(out.shape, (1, model.dims.n_audio_ctx, model.dims.n_audio_state))
+
+    def test_alibi_streaming_encoder_cache_can_extend_past_audio_context(self):
+        model = StreamingWhisper(
+            tiny_dims(n_audio_ctx=4),
+            gran=2,
+            rank=2,
+            extra_gran_blocks=0,
+            encoder_positional_mode="alibi",
+        )
+        model.encoder._use_stream(True)
+        cache, hooks = model.install_encoder_kv_cache_hooks()
+
+        try:
+            for mel_frames in (4, 8, 12):
+                mel = torch.randn(1, model.dims.n_mels, mel_frames)
+                out = model.encoder(mel, kv_cache=cache, mask=None)
+                self.assertEqual(out.shape, (1, model.gran, model.dims.n_audio_state))
+        finally:
+            for hook in hooks:
+                hook.remove()
+
+        cached_lengths = {
+            value.shape[1]
+            for value in cache.values()
+            if torch.is_tensor(value)
+        }
+        self.assertEqual(cached_lengths, {6})
+
+    def test_invalid_encoder_positional_mode_raises(self):
+        with self.assertRaisesRegex(ValueError, "encoder_positional_mode"):
+            StreamingWhisper(tiny_dims(), encoder_positional_mode="rotary")
+
+    def test_config_default_and_cli_switch(self):
+        self.assertEqual(Config().encoder_positional_mode, "sinusoidal")
+
+        with patch.object(sys, "argv", ["train.py", "--encoder_positional_mode", "alibi"]):
+            args = parse_cmdl()
+
+        self.assertEqual(args.encoder_positional_mode, "alibi")
+
+    def test_local_checkpoint_preserves_alibi_mode_and_old_default(self):
+        dims = tiny_dims()
+        alibi_checkpoint = {
+            "state_dict": {},
+            "dims": vars(dims),
+            "hyper_parameters": {
+                "gran": 2,
+                "rank": 2,
+                "extra_gran_blocks": 0,
+                "encoder_positional_mode": "alibi",
+            },
+        }
+        old_checkpoint = {
+            "state_dict": {},
+            "dims": vars(dims),
+            "hyper_parameters": {
+                "gran": 2,
+                "rank": 2,
+                "extra_gran_blocks": 0,
+            },
+        }
+
+        with patch("os.path.exists", return_value=True), patch(
+            "torch.load",
+            return_value=alibi_checkpoint,
+        ):
+            loaded = careless_whisper_stream.load_streaming_model(
+                "tiny",
+                device="cpu",
+                local_ckpt_path="alibi.ckpt",
+            )
+        self.assertEqual(loaded.encoder.encoder_positional_mode, "alibi")
+
+        with patch("os.path.exists", return_value=True), patch(
+            "torch.load",
+            return_value=old_checkpoint,
+        ):
+            loaded_old = careless_whisper_stream.load_streaming_model(
+                "tiny",
+                device="cpu",
+                local_ckpt_path="old.ckpt",
+            )
+        self.assertEqual(loaded_old.encoder.encoder_positional_mode, "sinusoidal")
+
+
+if __name__ == "__main__":
+    unittest.main()
