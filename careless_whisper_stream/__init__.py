@@ -123,6 +123,12 @@ def available_models() -> List[str]:
     return list(_MODELS.keys())
 
 
+def _get_hparam(hparams, key: str, default):
+    if isinstance(hparams, dict):
+        return hparams.get(key, default)
+    return getattr(hparams, key, default)
+
+
 def load_model(
     name: str,
     device: Optional[Union[str, torch.device]] = None,
@@ -194,6 +200,7 @@ def load_streaming_model_for_train(
     gran: int = 15, 
     rank: int = 8,
     extra_gran_blocks: int = 0,
+    encoder_positional_mode: str = "sinusoidal",
     n_advisor_class: int = 4,
     **kwargs: any
 ) -> StreamingWhisper:
@@ -255,12 +262,19 @@ def load_streaming_model_for_train(
     streaming_whisper_state_dict = {**advisor_state_dict, **whisper_dict}
     
     dims = ModelDimensions(**checkpoint["dims"])
+    hparams = checkpoint.get("hyper_parameters", checkpoint.get("cfg", {}))
+    m_encoder_positional_mode = _get_hparam(
+        hparams,
+        "encoder_positional_mode",
+        encoder_positional_mode,
+    )
     
     model = StreamingWhisper(dims, 
                              cache_gran=cache_gran, 
                              gran=gran, 
                              rank=rank, 
-                             extra_gran_blocks=extra_gran_blocks)
+                             extra_gran_blocks=extra_gran_blocks,
+                             encoder_positional_mode=m_encoder_positional_mode)
 
     model.load_state_dict(streaming_whisper_state_dict, strict=False)
 
@@ -279,6 +293,7 @@ def load_streaming_model(
     multilingual: bool = False,
     device: Optional[Union[str, torch.device]] = None,
     local_ckpt_path: Optional[str] = None,
+    encoder_positional_mode: str = "sinusoidal",
 ) -> StreamingWhisper:   
     
     if local_ckpt_path is not None:
@@ -308,22 +323,28 @@ def load_streaming_model(
 
     hparams = checkpoint.get("hyper_parameters", checkpoint.get("cfg", {}))
     
-    m_gran = hparams.get("enc_emb_gran", hparams.get("gran", gran))
-    m_extra = hparams.get("enc_context", hparams.get("extra_gran_blocks", 0))
-    m_rank = hparams.get("rank", 32)
+    m_gran = _get_hparam(hparams, "enc_emb_gran", _get_hparam(hparams, "gran", gran))
+    m_extra = _get_hparam(hparams, "enc_context", _get_hparam(hparams, "extra_gran_blocks", 0))
+    m_rank = _get_hparam(hparams, "rank", 32)
+    m_encoder_positional_mode = _get_hparam(
+        hparams,
+        "encoder_positional_mode",
+        encoder_positional_mode,
+    )
 
     if "dims" in checkpoint:
         dims = ModelDimensions(**checkpoint["dims"])
     else:
         dims = ModelDimensions(**checkpoint.get("cfg", {}).get("dims", {}))
 
-    print(f"Final Model Params -> Granule: {m_gran}, Extra Blocks: {m_extra}, Rank: {m_rank}")
+    print(f"Final Model Params -> Granule: {m_gran}, Extra Blocks: {m_extra}, Rank: {m_rank}, Encoder Positions: {m_encoder_positional_mode}")
 
     model = StreamingWhisper(
         dims, 
         gran=m_gran, 
         rank=m_rank, 
-        extra_gran_blocks=m_extra
+        extra_gran_blocks=m_extra,
+        encoder_positional_mode=m_encoder_positional_mode,
     )
 
     state_dict = checkpoint.get("state_dict", checkpoint)

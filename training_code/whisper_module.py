@@ -170,9 +170,14 @@ class LoRAStreamedWhisper(WhisperCustomModel):
                                                                                     rank=rank,
                                                                                     gran=enc_emb_gran,
                                                                                     extra_gran_blocks=enc_context,
+                                                                                    encoder_positional_mode=cfg.encoder_positional_mode,
                                                                                     )
         else:
-            self.model: StreamingWhisper = careless_whisper_stream.load_streaming_model(cfg.size, cfg.gran * 20)
+            self.model: StreamingWhisper = careless_whisper_stream.load_streaming_model(
+                cfg.size,
+                cfg.gran * 20,
+                encoder_positional_mode=cfg.encoder_positional_mode,
+            )
         
         for n, p in self.model.named_parameters():
             if "lora" not in n:
@@ -190,6 +195,7 @@ class LoRAStreamedWhisper(WhisperCustomModel):
         self.rank = self.model.rank
         self.enc_emb_gran = self.model.gran
         self.enc_context = self.model.extra_gran_blocks
+        self.encoder_positional_mode = self.model.encoder_positional_mode
         self.simulate_stream = sim_stream
         self.full_stream = cfg.streaming_train
         self.beam_size = beam_size

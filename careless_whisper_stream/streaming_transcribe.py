@@ -136,7 +136,9 @@ def transcribe(
 
             # save frames for optional save
             frames.extend(frame)
-            if len(frames) >= reset_len: # When we surpass the max_sec_context - reset model (positional embeddings constrain us)
+            # Reset remains the stream context/cache policy; ALiBi removes the
+            # absolute-position limit but does not yet implement rolling cache eviction.
+            if len(frames) >= reset_len:
                 frame = np.concatenate((frames[-360:], frame))
                 frames = []
                 frames.extend(frame.tolist())

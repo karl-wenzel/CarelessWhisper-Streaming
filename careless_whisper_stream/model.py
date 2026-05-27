@@ -74,6 +74,7 @@ class MultiHeadAttention(nn.Module):
         xa: Optional[Tensor] = None,
         mask: Optional[Tensor] = None,
         kv_cache: Optional[dict[any, Tensor]] = None,
+        positional_bias: Optional[Tensor] = None,
     ):
         q = self.query(x)
 
@@ -87,21 +88,32 @@ class MultiHeadAttention(nn.Module):
             k = kv_cache[self.key]
             v = kv_cache[self.value]
         
-        wv, qk = self.qkv_attention(q, k, v, mask)
+        wv, qk = self.qkv_attention(q, k, v, mask, positional_bias)
 
         return self.out(wv), qk
 
     def qkv_attention(
-        self, q: Tensor, k: Tensor, v: Tensor, mask: Optional[Tensor] = None
+        self,
+        q: Tensor,
+        k: Tensor,
+        v: Tensor,
+        mask: Optional[Tensor] = None,
+        positional_bias: Optional[Tensor] = None,
     ):
         # print(f"q shape: {q.shape}")
         n_batch, n_ctx, n_state = q.shape
+        _, k_ctx, _ = k.shape
         scale = (n_state // self.n_head) ** -0.25
         q = q.view(*q.shape[:2], self.n_head, -1).permute(0, 2, 1, 3) * scale
         k = k.view(*k.shape[:2], self.n_head, -1).permute(0, 2, 3, 1) * scale
         v = v.view(*v.shape[:2], self.n_head, -1).permute(0, 2, 1, 3)
 
         qk = q @ k
+        if positional_bias is not None:
+            qk = qk + positional_bias[..., :n_ctx, :k_ctx].to(
+                device=qk.device,
+                dtype=qk.dtype,
+            )
         if mask is not None:
             qk = qk + mask[:n_ctx, :n_ctx]
         qk = qk.float()
@@ -134,9 +146,15 @@ class ResidualAttentionBlock(nn.Module):
         xa: Optional[Tensor] = None,
         mask: Optional[Tensor] = None,
         kv_cache: Optional[dict] = None,
+        positional_bias: Optional[Tensor] = None,
     ):
         # SA        
-        x = x + self.attn(self.attn_ln(x), mask=mask, kv_cache=kv_cache)[0]
+        x = x + self.attn(
+            self.attn_ln(x),
+            mask=mask,
+            kv_cache=kv_cache,
+            positional_bias=positional_bias,
+        )[0]
         
         # CA
         if self.cross_attn: 

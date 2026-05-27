@@ -16,7 +16,38 @@ from .timing import add_word_timestamps
 
 from dataclasses import replace
 
-from pytorch_lightning import LightningModule
+try:
+    from pytorch_lightning import LightningModule
+except ModuleNotFoundError:
+    LightningModule = nn.Module
+
+
+ENCODER_POSITIONAL_MODES = {"sinusoidal", "alibi"}
+
+
+def validate_encoder_positional_mode(mode: str) -> str:
+    if mode not in ENCODER_POSITIONAL_MODES:
+        valid_modes = ", ".join(sorted(ENCODER_POSITIONAL_MODES))
+        raise ValueError(f"encoder_positional_mode must be one of: {valid_modes}. Got {mode!r}.")
+    return mode
+
+
+def _alibi_slopes(n_head: int) -> Tensor:
+    def slopes_for_power_of_two(n: int) -> list[float]:
+        start = 2 ** (-(2 ** -(math.log2(n) - 3)))
+        ratio = start
+        return [start * ratio ** i for i in range(n)]
+
+    if math.log2(n_head).is_integer():
+        slopes = slopes_for_power_of_two(n_head)
+    else:
+        closest_power_of_two = 2 ** math.floor(math.log2(n_head))
+        slopes = slopes_for_power_of_two(closest_power_of_two)
+        slopes += _alibi_slopes(2 * closest_power_of_two)[0::2].tolist()[
+            : n_head - closest_power_of_two
+        ]
+
+    return torch.tensor(slopes, dtype=torch.float32)
 
 
 class LoraLayer(LightningModule):
@@ -78,6 +109,7 @@ class LoRAMultiHeadAttention(LightningModule):
         xa: Tensor = None,
         mask: Tensor = None,
         kv_cache: dict = None,
+        positional_bias: Tensor = None,
         *args, **kwargs
     ):    
         q = self.query(x)
@@ -90,12 +122,18 @@ class LoRAMultiHeadAttention(LightningModule):
             k = kv_cache[self.key]
             v = kv_cache[self.value]
 
-        wv, qk = self.qkv_attention(q, k, v, mask, kv_cache)
+        wv, qk = self.qkv_attention(q, k, v, mask, kv_cache, positional_bias)
 
         return self.out(wv), qk
 
     def qkv_attention(
-            self, q: Tensor, k: Tensor, v: Tensor, mask: Tensor = None, kv_cache: dict = None
+            self,
+            q: Tensor,
+            k: Tensor,
+            v: Tensor,
+            mask: Tensor = None,
+            kv_cache: dict = None,
+            positional_bias: Tensor = None,
     ):
         n_batch, n_ctx, n_state = q.shape
         _, k_ctx, _ = k.shape
@@ -104,6 +142,12 @@ class LoRAMultiHeadAttention(LightningModule):
         k = k.view(*k.shape[:2], self.n_head, -1).permute(0, 2, 3, 1) * scale
         v = v.view(*v.shape[:2], self.n_head, -1).permute(0, 2, 1, 3)
         qk = q @ k
+
+        if positional_bias is not None:
+            qk = qk + positional_bias[..., :n_ctx, :k_ctx].to(
+                device=qk.device,
+                dtype=qk.dtype,
+            )
 
         # apply causal mask
         if mask is not None:
@@ -138,11 +182,25 @@ class LoRAMultiHeadAttention(LightningModule):
 
 class StreamingAudioEncoder(AudioEncoder):
 
-    def __init__(self, n_mels, n_ctx, n_state, n_head, n_layer, cache_gran, gran, rank, extra_gran_blocks):
+    def __init__(
+        self,
+        n_mels,
+        n_ctx,
+        n_state,
+        n_head,
+        n_layer,
+        cache_gran,
+        gran,
+        rank,
+        extra_gran_blocks,
+        encoder_positional_mode: str = "sinusoidal",
+    ):
         super().__init__(n_mels, n_ctx, n_state, n_head, n_layer)
 
         self.gran = gran
         self.extra_gran_blocks = extra_gran_blocks
+        self.encoder_positional_mode = validate_encoder_positional_mode(encoder_positional_mode)
+        self.register_buffer("alibi_slopes", _alibi_slopes(n_head), persistent=False)
 
         for block in self.blocks:
             block.attn = LoRAMultiHeadAttention(self.n_head,
@@ -171,6 +229,9 @@ class StreamingAudioEncoder(AudioEncoder):
 
         self.register_buffer("mask", mask, persistent=False)
 
+    def _uses_alibi(self) -> bool:
+        return self.encoder_positional_mode == "alibi"
+
     def _use_stream(self, use_stream: bool):
         self.use_stream = use_stream
 
@@ -180,6 +241,21 @@ class StreamingAudioEncoder(AudioEncoder):
     def _update_granularity(self, gran: int, extra_gran_blocks: int):
         self.gran = gran
         self.extra_gran_blocks = extra_gran_blocks
+
+    def _build_alibi_bias(
+        self,
+        q_ctx: int,
+        k_ctx: int,
+        q_start: int,
+        k_start: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Tensor:
+        query_positions = torch.arange(q_start, q_start + q_ctx, device=device)
+        key_positions = torch.arange(k_start, k_start + k_ctx, device=device)
+        distances = (query_positions[:, None] - key_positions[None, :]).abs().to(dtype)
+        slopes = self.alibi_slopes.to(device=device, dtype=dtype).view(1, self.n_head, 1, 1)
+        return -slopes * distances.view(1, 1, q_ctx, k_ctx)
 
     def forward(self, x: Tensor, index: list = [0, 1500], kv_cache = None, mask = True):
         """
@@ -193,24 +269,56 @@ class StreamingAudioEncoder(AudioEncoder):
         
         if self.use_stream:
             offset = next(iter(kv_cache.values())).shape[1] if kv_cache else 0
-            x = x[:, offset:offset + self.gran + (int(offset == 0) * (self.extra_gran_blocks * self.gran))] # offset
-            x = (x + self.positional_embedding[offset:offset + self.gran + (int(offset == 0) * (self.extra_gran_blocks * self.gran))]).to(x.dtype)
+            frame_count = self.gran + (int(offset == 0) * (self.extra_gran_blocks * self.gran))
+            x = x[:, offset:offset + frame_count] # offset
+            if not self._uses_alibi():
+                x = (x + self.positional_embedding[offset:offset + frame_count]).to(x.dtype)
+            q_start = offset
+            k_start = 0
+            k_ctx = offset + x.shape[1]
         else: # use during training
             x = x[:, index[0]:index[1]] # offset
-            x = (x + self.positional_embedding[index[0]:index[1]]).to(x.dtype)
+            if not self._uses_alibi():
+                x = (x + self.positional_embedding[index[0]:index[1]]).to(x.dtype)
+            q_start = index[0]
+            k_start = index[0]
+            k_ctx = x.shape[1]
+
+        # ALiBi intentionally avoids absolute encoder positions so future sliding
+        # cache work can evict old context without rebasing positional embeddings.
+        positional_bias = (
+            self._build_alibi_bias(
+                q_ctx=x.shape[1],
+                k_ctx=k_ctx,
+                q_start=q_start,
+                k_start=k_start,
+                device=x.device,
+                dtype=x.dtype,
+            )
+            if self._uses_alibi()
+            else None
+        )
 
         for block in self.blocks:
             chosen_mask = mask[..., :index[1], :index[1]] if isinstance(mask, Tensor) else self.mask if ((mask is not None) and (self.use_stream)) or ((mask is not None) and (self.use_mask)) else None
             # chosen_mask = mask[..., :index[1], :index[1]] if isinstance(mask, Tensor) else self.mask if (mask is not None) else None
             # print(f"{chosen_mask=}")
-            x = block(x, mask=chosen_mask, kv_cache=kv_cache)
+            x = block(x, mask=chosen_mask, kv_cache=kv_cache, positional_bias=positional_bias)
             
         x = self.ln_post(x)
 
         return x
 
     def _no_mask_forward(self, x: Tensor):
-        return super().forward(x)
+        if not self._uses_alibi():
+            return super().forward(x)
+
+        was_stream = self.use_stream
+        self.use_stream = False
+        try:
+            return self.forward(x, index=[0, self.positional_embedding.shape[0]], mask=None)
+        finally:
+            self.use_stream = was_stream
 
 class StreamingTextDecoder(TextDecoder):
     def __init__(self, n_vocab, n_ctx, n_state, n_head, n_layer, rank):
@@ -261,7 +369,16 @@ class StreamingTextDecoder(TextDecoder):
 
 
 class StreamingWhisper(Whisper):
-    def __init__(self, dims, cache_gran: bool = True, gran: int = 16, rank: int = 0, extra_gran_blocks: int = 0, random_masked_model: bool = False):
+    def __init__(
+        self,
+        dims,
+        cache_gran: bool = True,
+        gran: int = 16,
+        rank: int = 0,
+        extra_gran_blocks: int = 0,
+        random_masked_model: bool = False,
+        encoder_positional_mode: str = "sinusoidal",
+    ):
         super().__init__(dims)
 
         self.cache_gran = cache_gran
@@ -269,11 +386,12 @@ class StreamingWhisper(Whisper):
         self.rank = rank
         self.extra_gran_blocks = extra_gran_blocks
         self.random_masked_model = random_masked_model
+        self.encoder_positional_mode = validate_encoder_positional_mode(encoder_positional_mode)
 
         if not self.random_masked_model:
-            print(f"Running a streaming whisper model, using chunk size: {gran * 20}[msec] and {extra_gran_blocks} extra chunks for initialization.")
+            print(f"Running a streaming whisper model, using chunk size: {gran * 20}[msec], {extra_gran_blocks} extra chunks for initialization and {self.encoder_positional_mode} encoder positions.")
         else:
-            print(f"Running a random masked streaming whisper model, using chunk size: {gran * 20}[msec], {extra_gran_blocks} extra chunks for initialization and random masking during training.")
+            print(f"Running a random masked streaming whisper model, using chunk size: {gran * 20}[msec], {extra_gran_blocks} extra chunks for initialization, random masking during training and {self.encoder_positional_mode} encoder positions.")
 
         # The only difference is a streaming encoder
         self.encoder = StreamingAudioEncoder(
@@ -285,7 +403,8 @@ class StreamingWhisper(Whisper):
             cache_gran=cache_gran,
             gran=gran,
             rank=rank,
-            extra_gran_blocks=extra_gran_blocks
+            extra_gran_blocks=extra_gran_blocks,
+            encoder_positional_mode=self.encoder_positional_mode,
         )
 
         self.decoder = StreamingTextDecoder(

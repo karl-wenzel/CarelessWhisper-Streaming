@@ -51,6 +51,7 @@ class Config:
     save_untrained : bool = False
     slices_num: int = 20
     random_masking: bool = False
+    encoder_positional_mode: str = "sinusoidal"
 
     use_from_ft_ckpt: bool = False
 
@@ -105,6 +106,12 @@ def parse_cmdl():
     parser.add_argument('--streaming_random', action="store_true", help="Train using random sample points, not sequentially!")
     parser.add_argument('--random_masking', action="store_true", help="Train using random masking.")
     parser.add_argument('--multilingual', action="store_true", help="Train using multilingual dataset, assuming lang field is available.")
+    parser.add_argument(
+        '--encoder_positional_mode',
+        choices=["sinusoidal", "alibi"],
+        default="sinusoidal",
+        help="Encoder positional mode for streaming models.",
+    )
 
 
     return parser.parse_args()

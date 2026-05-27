@@ -145,6 +145,7 @@ def _apply_warmstart(model: LoRAStreamedWhisper, cfg: Config, model_name: str) -
         multilingual=cfg.multilingual,
         device="cpu",
         local_ckpt_path=warm_ckpt_path,
+        encoder_positional_mode=cfg.encoder_positional_mode,
     )
 
     missing, unexpected = model.model.load_state_dict(
@@ -172,6 +173,7 @@ def _save_untrained_checkpoint(model: LoRAStreamedWhisper, check_output_dir: str
             "extra_gran_blocks": cfg.extra_gran_blocks,
             "rank": cfg.rank,
             "multilingual": cfg.multilingual,
+            "encoder_positional_mode": cfg.encoder_positional_mode,
         },
         "cfg": vars(cfg),
     }
@@ -325,7 +327,8 @@ if __name__ == "__main__":
         lmdb=args.lmdb,
         self_supervision=args.self_supervision,
         slices_num=args.num_slices,
-        random_masking=args.random_masking
+        random_masking=args.random_masking,
+        encoder_positional_mode=args.encoder_positional_mode
     )
 
     if args.lmdb:

@@ -1259,6 +1259,8 @@ class DecodingTask:
         self.frame_counter += 1
         # print(f"Collected {self.frame_counter} frames...")
 
+        # This reset is still the cache/context policy. ALiBi can remove fixed
+        # encoder position slices, but rolling cache eviction is a separate step.
         if self.mel.shape[-1] >= self.options.maximal_seconds_context * 100: 
             self._reset_after_maximal_context(mel_frame)
         
