@@ -134,6 +134,34 @@ class EncoderAlibiTests(unittest.TestCase):
             )
         self.assertEqual(loaded_old.encoder.encoder_positional_mode, "sinusoidal")
 
+    def test_local_checkpoint_reads_nested_lightning_cfg(self):
+        dims = tiny_dims()
+        checkpoint = {
+            "state_dict": {},
+            "dims": vars(dims),
+            "hyper_parameters": {
+                "cfg": {
+                    "gran": 2,
+                    "rank": 2,
+                    "extra_gran_blocks": 0,
+                    "encoder_positional_mode": "alibi",
+                }
+            },
+        }
+
+        with patch("os.path.exists", return_value=True), patch(
+            "torch.load",
+            return_value=checkpoint,
+        ):
+            loaded = careless_whisper_stream.load_streaming_model(
+                "tiny",
+                device="cpu",
+                local_ckpt_path="nested-lightning.ckpt",
+            )
+
+        self.assertEqual(loaded.encoder.encoder_positional_mode, "alibi")
+        self.assertEqual(loaded.gran, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

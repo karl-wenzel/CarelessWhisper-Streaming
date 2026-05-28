@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import re
 import time
@@ -24,6 +25,127 @@ from evaluation_saving import append_evaluation_row
 
 ckpt_root = f"{os.environ.get('HOME')}/ma/data/models/ckpts"
 evaluation_file = f"{os.environ.get('HOME')}/ma/data/evaluation.csv"
+
+
+def _get_hparam(hparams, key: str, default=None):
+    missing = object()
+
+    def find_value(container):
+        if container is None:
+            return missing
+
+        if isinstance(container, dict):
+            if key in container:
+                return container[key]
+
+            for nested_key in ("hyper_parameters", "cfg"):
+                nested_cfg = container.get(nested_key)
+                if nested_cfg is not None:
+                    nested_value = find_value(nested_cfg)
+                    if nested_value is not missing:
+                        return nested_value
+
+            return missing
+
+        if hasattr(container, key):
+            return getattr(container, key)
+
+        nested_cfg = getattr(container, "cfg", None)
+        if nested_cfg is not None:
+            return find_value(nested_cfg)
+
+        return missing
+
+    value = find_value(hparams)
+    return default if value is missing else value
+
+
+def _load_run_cfg(model_run_name: str) -> dict:
+    cfg_path = Path(ckpt_root) / model_run_name / "cfg.json"
+    if not cfg_path.exists():
+        return {}
+
+    try:
+        with open(cfg_path, "r") as f:
+            return json.load(f)
+    except Exception as exc:
+        print(f"Warning: could not read run cfg from {cfg_path}: {exc}")
+        return {}
+
+
+def _score_to_float(score) -> float | None:
+    if score is None:
+        return None
+
+    if torch.is_tensor(score):
+        if score.numel() != 1:
+            return None
+        return float(score.detach().cpu().item())
+
+    try:
+        return float(score)
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_checkpoint_reference(path_value, checkpoint_dir: Path, ckpt_by_name: dict[str, Path]) -> Path | None:
+    if not path_value:
+        return None
+
+    candidate = Path(str(path_value))
+    if candidate.exists():
+        return candidate
+
+    # Lightning stores absolute best_model_path values. Evaluation can run in a
+    # moved container path, so resolve by filename inside the requested run dir.
+    return ckpt_by_name.get(candidate.name)
+
+
+def _find_best_wer_checkpoint_from_callbacks(
+    ckpt: dict,
+    checkpoint_dir: Path,
+    ckpt_by_name: dict[str, Path],
+) -> tuple[float | None, Path | None, str]:
+    scored_candidates: list[tuple[float, Path, str]] = []
+    unscored_candidates: list[tuple[Path, str]] = []
+
+    for callback_name, cb_state in ckpt.get("callbacks", {}).items():
+        if not isinstance(cb_state, dict):
+            continue
+
+        monitor = str(cb_state.get("monitor", ""))
+        if "wer" not in monitor.lower():
+            continue
+
+        best_k_models = cb_state.get("best_k_models")
+        if isinstance(best_k_models, dict):
+            for raw_path, raw_score in best_k_models.items():
+                resolved_path = _resolve_checkpoint_reference(raw_path, checkpoint_dir, ckpt_by_name)
+                score = _score_to_float(raw_score)
+                if resolved_path is not None and score is not None:
+                    scored_candidates.append((score, resolved_path, f"{callback_name}:best_k_models"))
+
+        best_model_path = _resolve_checkpoint_reference(
+            cb_state.get("best_model_path"),
+            checkpoint_dir,
+            ckpt_by_name,
+        )
+        if best_model_path is not None:
+            score = _score_to_float(cb_state.get("best_model_score"))
+            if score is None:
+                unscored_candidates.append((best_model_path, f"{callback_name}:best_model_path"))
+            else:
+                scored_candidates.append((score, best_model_path, f"{callback_name}:best_model_path"))
+
+    if scored_candidates:
+        score, path, source = min(scored_candidates, key=lambda item: item[0])
+        return score, path, source
+
+    if unscored_candidates:
+        path, source = unscored_candidates[0]
+        return None, path, source
+
+    return None, None, ""
 
 
 def _extract_epoch_from_name(path: Path) -> int:
@@ -76,18 +198,41 @@ def _resolve_checkpoint_path(model_run_name: str, checkpoint: int | None) -> Pat
             f"Available epochs: {available_epochs}"
         )
 
+    ckpt_by_name = {p.name: p for p in ckpt_files}
+    best_score = None
+    best_path = None
+    best_source = ""
+
     for ckpt_path in sorted(ckpt_files):
         try:
             ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-            callbacks = ckpt.get("callbacks", {})
-            for _, cb_state in callbacks.items():
-                if isinstance(cb_state, dict):
-                    best_model_path = cb_state.get("best_model_path")
-                    if best_model_path and os.path.exists(best_model_path):
-                        return Path(best_model_path)
-        except Exception:
-            pass
+            score, path, source = _find_best_wer_checkpoint_from_callbacks(
+                ckpt,
+                checkpoint_dir,
+                ckpt_by_name,
+            )
+            if path is None:
+                continue
+            if score is None:
+                if best_path is None:
+                    best_path = path
+                    best_source = source
+                continue
+            if best_score is None or score < best_score:
+                best_score = score
+                best_path = path
+                best_source = source
+        except Exception as exc:
+            print(f"Warning: could not inspect checkpoint metadata in {ckpt_path}: {exc}")
 
+    if best_path is not None:
+        if best_score is None:
+            print(f"Selected best checkpoint from Lightning metadata: {best_path} ({best_source})")
+        else:
+            print(f"Selected best WER checkpoint from Lightning metadata: {best_path} ({best_source}, score={best_score:.6f})")
+        return best_path
+
+    print("Warning: no usable best WER checkpoint metadata found; falling back to highest epoch checkpoint.")
     return max(ckpt_files, key=_extract_epoch_from_name)
 
 
@@ -101,14 +246,14 @@ def _resolve_csv_relative_path(csv_path: str, value: str) -> str:
 def _infer_language(
     dataset_name: str,
     explicit_lang: str | None = None,
-    checkpoint_cfg: dict | None = None,
+    checkpoint_cfg=None,
 ) -> str | None:
     if explicit_lang:
         return _canonicalize_language(explicit_lang)
 
     if checkpoint_cfg:
         for key in ("lang", "language"):
-            value = checkpoint_cfg.get(key)
+            value = _get_hparam(checkpoint_cfg, key)
             if value:
                 return _canonicalize_language(value)
 
@@ -146,6 +291,34 @@ def _get_normalizer(language: str | None):
             return BasicTextNormalizer()
 
     return BasicTextNormalizer()
+
+
+def _resolve_encoder_positional_mode(
+    requested_mode: str,
+    model_run_name: str,
+    checkpoint_hparams,
+) -> str:
+    if requested_mode != "auto":
+        return requested_mode
+
+    checkpoint_mode = _get_hparam(checkpoint_hparams, "encoder_positional_mode")
+    if checkpoint_mode in {"sinusoidal", "alibi"}:
+        return checkpoint_mode
+
+    run_cfg = _load_run_cfg(model_run_name)
+    cfg_mode = _get_hparam(run_cfg, "encoder_positional_mode")
+    if cfg_mode in {"sinusoidal", "alibi"}:
+        return cfg_mode
+
+    if "alibi" in model_run_name.lower():
+        print(
+            "Warning: run name contains 'alibi' but checkpoint/cfg metadata does not "
+            "declare encoder_positional_mode. Inferring alibi; pass "
+            "--encoder_positional_mode sinusoidal to override this for non-ALiBi runs."
+        )
+        return "alibi"
+
+    return "sinusoidal"
 
 
 def _normalize_for_eval(text: str, normalizer) -> str:
@@ -319,6 +492,12 @@ def evaluate():
     parser.add_argument("--beam_size", type=int, default=5, help="Beam size during inference.")
     parser.add_argument("--lang", type=str, default=None, help="Language code for normalization/transcription, e.g. en or de. If omitted, infer from checkpoint or dataset.")
     parser.add_argument(
+        "--encoder_positional_mode",
+        choices=["auto", "sinusoidal", "alibi"],
+        default="auto",
+        help="Encoder positional mode. auto reads checkpoint/cfg metadata, then infers ALiBi from run names containing 'alibi'.",
+    )
+    parser.add_argument(
         "--strict_k",
         type=int,
         nargs="*",
@@ -342,14 +521,19 @@ def evaluate():
 
         # Infer actual model size from checkpoint metadata if available, otherwise fall back to run name
         checkpoint_obj = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-        hparams = checkpoint_obj.get("hyper_parameters", checkpoint_obj.get("cfg", {}))
-        base_model_name = hparams.get("size", args.model)
+        hparams = checkpoint_obj
+        base_model_name = _get_hparam(hparams, "size", args.model)
         print(f"model size: {base_model_name}")
     else:
         print(f"Using cw model. size: {args.model} chunk size: {args.chunk_size}.")
         ckpt_path = None
         hparams = {}
 
+    encoder_positional_mode = _resolve_encoder_positional_mode(
+        args.encoder_positional_mode,
+        args.model,
+        hparams,
+    )
     default_language = _infer_language(args.dataset_name, explicit_lang=args.lang, checkpoint_cfg=hparams)
     default_normalizer = _get_normalizer(default_language)
     if len(args.strict_k) == 0:
@@ -365,6 +549,7 @@ def evaluate():
         raise ValueError("--wir_n values must be non-negative integers.")
     print(f"Evaluation language: {default_language or 'auto/basic'}")
     print(f"Default normalizer: {type(default_normalizer).__name__}")
+    print(f"Encoder positional mode: {encoder_positional_mode}")
     print(f"Strict correction distances: {strict_k_values}")
     print(f"WIR suffix tolerances: {wir_suffix_tolerances}")
 
@@ -375,6 +560,7 @@ def evaluate():
         multilingual=args.multilingual,
         device=args.device,
         local_ckpt_path=None if args.cw else str(ckpt_path),
+        encoder_positional_mode=encoder_positional_mode,
     )
     model.eval()
 
@@ -569,6 +755,7 @@ def evaluate():
         "strict_summary": strict_summary,
         "language": default_language or "",
         "multilingual": bool(args.multilingual),
+        "encoder_positional_mode": encoder_positional_mode,
         "device": args.device,
         "sa_kv_cache": bool(args.sa_kv_cache),
         "ca_kv_cache": bool(args.ca_kv_cache),

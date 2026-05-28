@@ -124,9 +124,36 @@ def available_models() -> List[str]:
 
 
 def _get_hparam(hparams, key: str, default):
-    if isinstance(hparams, dict):
-        return hparams.get(key, default)
-    return getattr(hparams, key, default)
+    missing = object()
+
+    def find_value(container):
+        if container is None:
+            return missing
+
+        if isinstance(container, dict):
+            if key in container:
+                return container[key]
+
+            for nested_key in ("hyper_parameters", "cfg"):
+                nested_cfg = container.get(nested_key)
+                if nested_cfg is not None:
+                    nested_value = find_value(nested_cfg)
+                    if nested_value is not missing:
+                        return nested_value
+
+            return missing
+
+        if hasattr(container, key):
+            return getattr(container, key)
+
+        nested_cfg = getattr(container, "cfg", None)
+        if nested_cfg is not None:
+            return find_value(nested_cfg)
+
+        return missing
+
+    value = find_value(hparams)
+    return default if value is missing else value
 
 
 def load_model(
@@ -200,7 +227,7 @@ def load_streaming_model_for_train(
     gran: int = 15, 
     rank: int = 8,
     extra_gran_blocks: int = 0,
-    encoder_positional_mode: str = "sinusoidal",
+    encoder_positional_mode: Optional[str] = None,
     n_advisor_class: int = 4,
     **kwargs: any
 ) -> StreamingWhisper:
@@ -262,11 +289,10 @@ def load_streaming_model_for_train(
     streaming_whisper_state_dict = {**advisor_state_dict, **whisper_dict}
     
     dims = ModelDimensions(**checkpoint["dims"])
-    hparams = checkpoint.get("hyper_parameters", checkpoint.get("cfg", {}))
-    m_encoder_positional_mode = _get_hparam(
-        hparams,
+    m_encoder_positional_mode = encoder_positional_mode or _get_hparam(
+        checkpoint,
         "encoder_positional_mode",
-        encoder_positional_mode,
+        "sinusoidal",
     )
     
     model = StreamingWhisper(dims, 
@@ -293,7 +319,7 @@ def load_streaming_model(
     multilingual: bool = False,
     device: Optional[Union[str, torch.device]] = None,
     local_ckpt_path: Optional[str] = None,
-    encoder_positional_mode: str = "sinusoidal",
+    encoder_positional_mode: Optional[str] = None,
 ) -> StreamingWhisper:   
     
     if local_ckpt_path is not None:
@@ -321,15 +347,13 @@ def load_streaming_model(
 
     checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
 
-    hparams = checkpoint.get("hyper_parameters", checkpoint.get("cfg", {}))
-    
-    m_gran = _get_hparam(hparams, "enc_emb_gran", _get_hparam(hparams, "gran", gran))
-    m_extra = _get_hparam(hparams, "enc_context", _get_hparam(hparams, "extra_gran_blocks", 0))
-    m_rank = _get_hparam(hparams, "rank", 32)
-    m_encoder_positional_mode = _get_hparam(
-        hparams,
+    m_gran = _get_hparam(checkpoint, "enc_emb_gran", _get_hparam(checkpoint, "gran", gran))
+    m_extra = _get_hparam(checkpoint, "enc_context", _get_hparam(checkpoint, "extra_gran_blocks", 0))
+    m_rank = _get_hparam(checkpoint, "rank", 32)
+    m_encoder_positional_mode = encoder_positional_mode or _get_hparam(
+        checkpoint,
         "encoder_positional_mode",
-        encoder_positional_mode,
+        "sinusoidal",
     )
 
     if "dims" in checkpoint:
