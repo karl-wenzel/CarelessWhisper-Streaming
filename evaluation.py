@@ -507,6 +507,7 @@ def evaluate():
     parser.add_argument("--wir_n", type=int, nargs="*", default=[], help="Additional WIR suffix tolerances to evaluate, e.g. --wir_n 0 1 2. n means the last n words are ignored when counting WIR changes.")
     parser.add_argument("-sa_kv_cache", action="store_true", help="Use self-attention KV cache")
     parser.add_argument("-ca_kv_cache", action="store_true", help="Use cross-attention KV cache")
+    parser.add_argument("--use_sliding_encoder_cache", action="store_true", help="Slide encoder KV cache instead of resetting at max context")
     parser.add_argument("-verbose", action="store_true", help="Prints additional info while evaluating")
     parser.add_argument("-cw", action="store_true", help="Uses a CW whisper base model instead of a local model.")
 
@@ -626,6 +627,7 @@ def evaluate():
             temperature=0,
             ca_kv_cache=args.ca_kv_cache,
             sa_kv_cache=args.sa_kv_cache,
+            use_sliding_encoder_cache=args.use_sliding_encoder_cache,
             verbose=False
         )
 
@@ -759,6 +761,7 @@ def evaluate():
         "device": args.device,
         "sa_kv_cache": bool(args.sa_kv_cache),
         "ca_kv_cache": bool(args.ca_kv_cache),
+        "use_sliding_encoder_cache": bool(args.use_sliding_encoder_cache),
         "wer": float(wer),
         "strict_wer": float(strict_wer),
         "rwer": float(rwer),

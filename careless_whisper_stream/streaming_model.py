@@ -14,7 +14,7 @@ from .decoding import decode as non_causal_decode_function
 from .audio import SpectrogramStream
 from .timing import add_word_timestamps
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 try:
     from pytorch_lightning import LightningModule
@@ -23,6 +23,51 @@ except ModuleNotFoundError:
 
 
 ENCODER_POSITIONAL_MODES = {"sinusoidal", "alibi"}
+ENCODER_CACHE_STATE_KEY = "__encoder_cache_state__"
+
+
+@dataclass
+class EncoderCacheState:
+    use_sliding: bool = False
+    max_frames: Optional[int] = None
+    cache_start_frame: int = 0
+    cached_frames: int = 0
+    total_frames: int = 0
+
+    @property
+    def next_frame(self) -> int:
+        return self.cache_start_frame + self.cached_frames
+
+    def commit(self, new_frames: int) -> int:
+        self.cached_frames += int(new_frames)
+        self.total_frames = max(self.total_frames, self.next_frame)
+
+        if not self.use_sliding or self.max_frames is None:
+            return 0
+
+        frames_to_prune = max(0, self.cached_frames - self.max_frames)
+        if frames_to_prune > 0:
+            self.cached_frames -= frames_to_prune
+            self.cache_start_frame += frames_to_prune
+
+        return frames_to_prune
+
+
+def get_encoder_cache_state(kv_cache: Optional[dict]) -> Optional[EncoderCacheState]:
+    if kv_cache is None:
+        return None
+
+    return kv_cache.get(ENCODER_CACHE_STATE_KEY)
+
+
+def _first_cached_tensor(kv_cache: Optional[dict]) -> Optional[Tensor]:
+    if not kv_cache:
+        return None
+
+    return next(
+        (value for value in kv_cache.values() if torch.is_tensor(value)),
+        None,
+    )
 
 
 def validate_encoder_positional_mode(mode: str) -> str:
@@ -268,13 +313,21 @@ class StreamingAudioEncoder(AudioEncoder):
         x = x.permute(0, 2, 1)
         
         if self.use_stream:
-            offset = next(iter(kv_cache.values())).shape[1] if kv_cache else 0
+            cache_state = get_encoder_cache_state(kv_cache)
+            cached_tensor = _first_cached_tensor(kv_cache)
+            offset = (
+                cache_state.cached_frames
+                if cache_state is not None
+                else cached_tensor.shape[1] if cached_tensor is not None else 0
+            )
+            absolute_query_start = cache_state.next_frame if cache_state is not None else offset
+            absolute_key_start = cache_state.cache_start_frame if cache_state is not None else 0
             frame_count = self.gran + (int(offset == 0) * (self.extra_gran_blocks * self.gran))
             x = x[:, offset:offset + frame_count] # offset
             if not self._uses_alibi():
-                x = (x + self.positional_embedding[offset:offset + frame_count]).to(x.dtype)
-            q_start = offset
-            k_start = 0
+                x = (x + self.positional_embedding[absolute_query_start:absolute_query_start + frame_count]).to(x.dtype)
+            q_start = absolute_query_start
+            k_start = absolute_key_start
             k_ctx = offset + x.shape[1]
         else: # use during training
             x = x[:, index[0]:index[1]] # offset
@@ -507,8 +560,10 @@ class StreamingWhisper(Whisper):
         for hook in self.encoder._forward_hooks.values():
             hook.remove()
 
-    def install_encoder_kv_cache_hooks(self, cache = None):
+    def install_encoder_kv_cache_hooks(self, cache = None, cache_state: Optional[EncoderCacheState] = None):
         cache = {**cache} if cache is not None else {}
+        if cache_state is not None:
+            cache[ENCODER_CACHE_STATE_KEY] = cache_state
         hooks = []
 
         def save_to_cache(module, _, output):
@@ -526,6 +581,14 @@ class StreamingWhisper(Whisper):
         
         self.encoder.apply(install_hooks)
         return cache, hooks
+
+    def prune_encoder_kv_cache(self, cache: dict, frames_to_prune: int):
+        if frames_to_prune <= 0:
+            return
+
+        for module, value in list(cache.items()):
+            if torch.is_tensor(value):
+                cache[module] = value[:, frames_to_prune:].detach()
     
     def install_decoder_kv_cache_hooks(self, cache = None):
         cache = {**cache} if cache is not None else {}
@@ -581,6 +644,14 @@ class StreamingWhisper(Whisper):
                 hooks.append(module.value.register_forward_pre_hook(check_if_calculation_is_needed))
         
         return cache, hooks
+
+    def prune_cross_attn_kv_cache(self, cache: dict, frames_to_prune: int):
+        if frames_to_prune <= 0:
+            return
+
+        for module, value in list(cache.items()):
+            if torch.is_tensor(value):
+                cache[module] = value[:, frames_to_prune:].detach()
 
     # For non-causal decoding compatibility
     def install_kv_cache_hooks(self, cache: Optional[dict] = None):

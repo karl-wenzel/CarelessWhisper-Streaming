@@ -49,6 +49,7 @@ def transcribe(
     get_times: bool = False,
     pad_trim: bool = False,
     max_sec_context: int = 30,
+    use_sliding_encoder_cache: bool = False,
     streaming_timestamps: bool = False,
     force_first_tokens_timestamps: bool = False,
     verbose: bool = True,
@@ -107,6 +108,8 @@ def transcribe(
         stream_decode=stream_decode,
         use_kv_cache=sa_kv_cache,
         use_ca_kv_cache=ca_kv_cache,
+        maximal_seconds_context=max_sec_context,
+        use_sliding_encoder_cache=use_sliding_encoder_cache,
         streaming_timestamps=streaming_timestamps,
         force_first_tokens_timestamps=force_first_tokens_timestamps,
         verbose=verbose,
@@ -136,9 +139,9 @@ def transcribe(
 
             # save frames for optional save
             frames.extend(frame)
-            # Reset remains the stream context/cache policy; ALiBi removes the
-            # absolute-position limit but does not yet implement rolling cache eviction.
-            if len(frames) >= reset_len:
+            # Legacy mode resets at max context; sliding cache mode keeps this
+            # stream alive and lets DecodingTask prune encoder-side state.
+            if (not use_sliding_encoder_cache) and len(frames) >= reset_len:
                 frame = np.concatenate((frames[-360:], frame))
                 frames = []
                 frames.extend(frame.tolist())
@@ -215,6 +218,7 @@ def cli():
     parser.add_argument("--beam_size", type=int, default=5, help="Beam size for beam search decoding")
     parser.add_argument("--language", type=str, default="en", help="Language of transcription")
     parser.add_argument("--max_sec_context", type=int, default=30, help="Max context window size in seconds")
+    parser.add_argument("--use_sliding_encoder_cache", action="store_true", help="Slide encoder KV cache instead of resetting at max context")
 
     args = parser.parse_args().__dict__
 

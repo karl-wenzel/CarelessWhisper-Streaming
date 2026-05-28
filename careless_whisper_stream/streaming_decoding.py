@@ -69,6 +69,7 @@ class DecodingOptions:
 
     use_kv_cache: bool = False
     use_ca_kv_cache: bool = False
+    use_sliding_encoder_cache: bool = False
 
     # streaming decoding args
     stream_decode: bool = True
@@ -896,6 +897,8 @@ class DecodingTask:
         
         self.mel = None
         self.index = 0
+        self.mel_start_encoder_frame = 0
+        self.last_encoder_cache_prune = 0
 
         # repeat text tensors by the group size, for beam search or best-of-n sampling 
         self.tokens: Tensor = torch.tensor([self.initial_tokens]) # no need to use repeat, batch is meaningless in stream.
@@ -906,16 +909,30 @@ class DecodingTask:
         self.no_speech_probs = [np.nan] * n_batch
 
         # Causal encoder inference
+        max_cache_frames = max(
+            self.options.gran * (1 + self.options.look_ahead_blocks),
+            int(self.options.maximal_seconds_context / 0.02),
+        )
+        self.encoder_cache_max_frames = max_cache_frames if self.options.use_sliding_encoder_cache else None
         self._init_enc_kv_caching()
 
         if options.use_ca_kv_cache:
             self._init_ca_kv_caching()
 
-        self.audio_features = torch.zeros((1, model.dims.n_audio_ctx, model.dims.n_audio_state)).to(model.device)
+        audio_feature_frames = 0 if self.options.use_sliding_encoder_cache else model.dims.n_audio_ctx
+        self.audio_features = torch.zeros((1, audio_feature_frames, model.dims.n_audio_state)).to(model.device)
         self.frame_counter = 0
 
     def _init_enc_kv_caching(self):
-        self.enc_kv_cache, self.enc_hooks = self.model.install_encoder_kv_cache_hooks()
+        from .streaming_model import EncoderCacheState
+
+        self.encoder_cache_state = EncoderCacheState(
+            use_sliding=self.options.use_sliding_encoder_cache,
+            max_frames=self.encoder_cache_max_frames,
+        )
+        self.enc_kv_cache, self.enc_hooks = self.model.install_encoder_kv_cache_hooks(
+            cache_state=self.encoder_cache_state,
+        )
     
     def _init_ca_kv_caching(self):
         self.ca_kv_cache, self.dec_ca_hooks = self.model.install_cross_attn_kv_cache_hooks()
@@ -958,6 +975,12 @@ class DecodingTask:
             0 <= options.length_penalty <= 1
         ):
             raise ValueError("length_penalty (alpha) should be a value between 0 and 1")
+        if options.use_sliding_encoder_cache:
+            encoder_mode = getattr(self.model.encoder, "encoder_positional_mode", "sinusoidal")
+            if encoder_mode != "alibi":
+                raise ValueError("use_sliding_encoder_cache requires an ALiBi encoder positional mode")
+            if not options.single_frame_mel:
+                raise ValueError("use_sliding_encoder_cache requires single_frame_mel=True")
 
         return options
 
@@ -1030,7 +1053,7 @@ class DecodingTask:
         if self.options.fp16:
             mel = mel.half()
 
-        encoder_cache_offset = self._get_encoder_cache_offset()
+        encoder_cache_offset = self.encoder_cache_state.cached_frames
         audio_features: Tensor = self.model.encoder(mel, kv_cache=self.enc_kv_cache, mask=None)
         
         if audio_features.dtype != (
@@ -1040,14 +1063,34 @@ class DecodingTask:
                 f"audio_features has an incorrect dtype: {audio_features.dtype}"
             )
 
+        self.last_encoder_cache_prune = self.encoder_cache_state.commit(audio_features.shape[1])
+        self.model.prune_encoder_kv_cache(self.enc_kv_cache, self.last_encoder_cache_prune)
+
         # Usually will run with this config
         if self.options.use_ca_kv_cache:
             return audio_features
 
-        # update audio_features
-        start_index = encoder_cache_offset
+        self._append_audio_features(audio_features, encoder_cache_offset, self.last_encoder_cache_prune)
+
+    def _append_audio_features(self, audio_features: Tensor, start_index: int, frames_to_prune: int):
+        if self.options.use_sliding_encoder_cache:
+            retained_features = self.audio_features[:, frames_to_prune:] if frames_to_prune > 0 else self.audio_features
+            self.audio_features = torch.cat([retained_features, audio_features], dim=1).detach()
+            return
+
         end_index = start_index + audio_features.shape[1]
         self.audio_features[:, start_index:end_index] = audio_features
+
+    def _trim_sliding_mel(self):
+        if not self.options.use_sliding_encoder_cache or self.mel is None:
+            return
+
+        target_mel_frames = self.encoder_cache_state.cached_frames * 2
+        if target_mel_frames <= 0 or self.mel.shape[-1] <= target_mel_frames:
+            return
+
+        self.mel = self.mel[..., -target_mel_frames:]
+        self.mel_start_encoder_frame = self.encoder_cache_state.cache_start_frame
 
     def _get_encoder_cache_offset(self) -> int:
         """
@@ -1058,14 +1101,7 @@ class DecodingTask:
         length keeps the feature buffer aligned even when the accumulated mel
         length lands exactly on a boundary.
         """
-        if not self.enc_kv_cache:
-            return 0
-
-        cached_tensor = next(
-            (value for value in self.enc_kv_cache.values() if torch.is_tensor(value)),
-            None,
-        )
-        return 0 if cached_tensor is None else cached_tensor.shape[1]
+        return self.encoder_cache_state.cached_frames
 
     def _detect_language(self, audio_features: Tensor, tokens: Tensor):
         languages = [self.options.language] * audio_features.shape[0]
@@ -1259,9 +1295,9 @@ class DecodingTask:
         self.frame_counter += 1
         # print(f"Collected {self.frame_counter} frames...")
 
-        # This reset is still the cache/context policy. ALiBi can remove fixed
-        # encoder position slices, but rolling cache eviction is a separate step.
-        if self.mel.shape[-1] >= self.options.maximal_seconds_context * 100: 
+        # In the legacy path, max context still triggers a full reset. Sliding
+        # cache keeps the same window length by pruning encoder-side state.
+        if (not self.options.use_sliding_encoder_cache) and self.mel.shape[-1] >= self.options.maximal_seconds_context * 100: 
             self._reset_after_maximal_context(mel_frame)
         
         # print(f"{self.mel.shape=}")
@@ -1274,10 +1310,15 @@ class DecodingTask:
         if not self.options.use_ca_kv_cache:
             self._get_audio_features(self.mel) # encoder forward pass, updates self.audio_features
             audio_features = self.audio_features
-            sum_logprobs, no_speech_probs = self._main_loop(audio_features[:, :self.index])
+            decoder_audio_features = audio_features if self.options.use_sliding_encoder_cache else audio_features[:, :self.index]
+            sum_logprobs, no_speech_probs = self._main_loop(decoder_audio_features)
         else:
             audio_features = self._get_audio_features(self.mel)
             sum_logprobs, no_speech_probs = self._main_loop(audio_features)
+            if self.options.use_sliding_encoder_cache:
+                self.model.prune_cross_attn_kv_cache(self.ca_kv_cache, self.last_encoder_cache_prune)
+
+        self._trim_sliding_mel()
 
 
         # reshape the tensors to have (n_audio, n_group) as the first two dimensions
