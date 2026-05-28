@@ -6,7 +6,7 @@ import torch
 
 import careless_whisper_stream
 from careless_whisper_stream.model import ModelDimensions
-from careless_whisper_stream.streaming_model import StreamingWhisper
+from careless_whisper_stream.streaming_model import EncoderCacheState, StreamingWhisper
 from training_code.utils import Config, parse_cmdl
 
 
@@ -77,6 +77,46 @@ class EncoderAlibiTests(unittest.TestCase):
             if torch.is_tensor(value)
         }
         self.assertEqual(cached_lengths, {6})
+
+    def test_alibi_sliding_encoder_cache_prunes_kv_and_tracks_offsets(self):
+        model = StreamingWhisper(
+            tiny_dims(n_audio_ctx=4),
+            gran=2,
+            rank=2,
+            extra_gran_blocks=0,
+            encoder_positional_mode="alibi",
+        )
+        model.encoder._use_stream(True)
+        state = EncoderCacheState(use_sliding=True, max_frames=4)
+        cache, hooks = model.install_encoder_kv_cache_hooks(cache_state=state)
+        mel_window = None
+
+        try:
+            for _ in range(4):
+                mel_frame = torch.randn(1, model.dims.n_mels, model.gran * 2)
+                mel_window = mel_frame if mel_window is None else torch.cat([mel_window, mel_frame], dim=-1)
+
+                out = model.encoder(mel_window, kv_cache=cache, mask=None)
+                frames_to_prune = state.commit(out.shape[1])
+                model.prune_encoder_kv_cache(cache, frames_to_prune)
+
+                if frames_to_prune > 0:
+                    mel_window = mel_window[..., frames_to_prune * 2:]
+
+                cached_lengths = {
+                    value.shape[1]
+                    for value in cache.values()
+                    if torch.is_tensor(value)
+                }
+                self.assertLessEqual(max(cached_lengths), state.max_frames)
+                self.assertEqual(cached_lengths, {state.cached_frames})
+        finally:
+            for hook in hooks:
+                hook.remove()
+
+        self.assertEqual(state.cached_frames, 4)
+        self.assertEqual(state.cache_start_frame, 4)
+        self.assertEqual(state.total_frames, 8)
 
     def test_invalid_encoder_positional_mode_raises(self):
         with self.assertRaisesRegex(ValueError, "encoder_positional_mode"):
