@@ -78,4 +78,8 @@ ds_paths = {
         'val': "/mtec/local/LRS3_aligned/csv/trainval.csv",
         'test': "/mtec/local/LRS3_aligned/csv/test.csv",
     },
+
+    'REVLONG': {
+        'test': "/mtec/local/RevLong/csv/tedlium_train_lf_long.csv",
+    }
 }
