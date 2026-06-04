@@ -260,7 +260,13 @@ def _infer_language(
     dataset_upper = dataset_name.upper()
     if "CV-DE" in dataset_upper or "-DE-" in dataset_upper or dataset_upper.endswith("-DE"):
         return "de"
-    if "LIBRI" in dataset_upper or "-EN-" in dataset_upper or dataset_upper.endswith("-EN"):
+    if (
+        "LIBRI" in dataset_upper
+        or "REV" in dataset_upper
+        or "TEDLIUM" in dataset_upper
+        or "-EN-" in dataset_upper
+        or dataset_upper.endswith("-EN")
+    ):
         return "en"
 
     return None
@@ -370,7 +376,7 @@ def _build_strict_word_buffer(results, normalizer, correction_distance: int = 2)
     strict_words = []
 
     for res in results:
-        candidate_words = _normalize_for_eval(getattr(res, "text", ""), normalizer).split()
+        candidate_words = _normalize_for_eval(_result_text_for_eval(res), normalizer).split()
 
         if not strict_words:
             strict_words = candidate_words
@@ -380,6 +386,27 @@ def _build_strict_word_buffer(results, normalizer, correction_distance: int = 2)
         strict_words = strict_words[:frozen_prefix_len] + candidate_words[frozen_prefix_len:]
 
     return " ".join(strict_words)
+
+
+def _row_text(row, column_name: str) -> str:
+    if column_name not in row or pd.isna(row[column_name]):
+        return ""
+    return str(row[column_name]).strip()
+
+
+def _reference_text_for_sample(row, gt_words, normalizer) -> str:
+    raw_text = _normalize_for_eval(_row_text(row, "raw_text"), normalizer)
+    if raw_text:
+        return raw_text
+
+    return _normalize_for_eval(" ".join([w["word"] for w in gt_words]), normalizer)
+
+
+def _result_text_for_eval(result) -> str:
+    full_text = str(getattr(result, "full_text", "") or "").strip()
+    if full_text:
+        return full_text
+    return str(getattr(result, "text", "") or "")
 
 
 def calculate_word_instability(results, normalizer):
@@ -392,7 +419,7 @@ def calculate_word_instability(results, normalizer):
     multiple changes over time if the hypothesis keeps getting rewritten.
     """
     normalized_hypotheses = [
-        _normalize_for_eval(getattr(res, "text", ""), normalizer).split()
+        _normalize_for_eval(_result_text_for_eval(res), normalizer).split()
         for res in results
     ]
 
@@ -422,7 +449,7 @@ def calculate_word_instability_with_suffix_tolerance(results, normalizer, suffix
     `suffix_tolerance` words of the previous hypothesis.
     """
     normalized_hypotheses = [
-        _normalize_for_eval(getattr(res, "text", ""), normalizer).split()
+        _normalize_for_eval(_result_text_for_eval(res), normalizer).split()
         for res in results
     ]
 
@@ -616,7 +643,7 @@ def evaluate():
         total_audio_duration_sec += audio_duration
 
         gt_words = extract_words_and_times_from_tg(tg_path)
-        reference_text = _normalize_for_eval(" ".join([w["word"] for w in gt_words]), normalizer)
+        reference_text = _reference_text_for_sample(row, gt_words, normalizer)
 
         results = transcribe(
             model=model,
@@ -632,7 +659,7 @@ def evaluate():
         )
 
         for step, res in enumerate(results):
-            hyp_text = _normalize_for_eval(res.text, normalizer)
+            hyp_text = _normalize_for_eval(_result_text_for_eval(res), normalizer)
 
             p_latency = getattr(res, "processing_time", 0.0)
             all_chunk_latencies.append(p_latency)
@@ -652,7 +679,7 @@ def evaluate():
             global_arwer_num += (i_a + d_a + s_a)
             global_arwer_den += (c_a + d_a + s_a)
 
-        predicted_text = results[-1].text if results else ""
+        predicted_text = _result_text_for_eval(results[-1]) if results else ""
         normalized_prediction = _normalize_for_eval(predicted_text, normalizer)
         strict_predictions_for_sample = {
             strict_k: _build_strict_word_buffer(results, normalizer, strict_k)

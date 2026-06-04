@@ -161,6 +161,10 @@ def transcribe(
 
             # decode given the new mel frame and print results
             result = model.decode(mel_frame.squeeze(0), decoding_options)
+            # Long-form simulated streams can cross the legacy 30s reset boundary.
+            # Keep the accumulated transcript on the result so evaluators can score
+            # the whole sample instead of only the current post-reset window.
+            result.full_text = (full_text + " " + result.text).strip()
             
             chunk_end_time = time.perf_counter()
             processing_latency = chunk_end_time - chunk_start_time
