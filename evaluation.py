@@ -403,7 +403,7 @@ def _reference_text_for_sample(row, gt_words, normalizer) -> str:
     return _normalize_for_eval(" ".join([w["word"] for w in gt_words]), normalizer)
 
 
-def _reference_debug_lines(wav_path, tg_path, row, gt_words, normalizer):
+def _reference_debug_lines(wav_path, tg_path, row, gt_words, normalizer, audio_duration=None):
     """
     Build compact verbose diagnostics for suspected REVLONG reference mismatches.
 
@@ -421,6 +421,13 @@ def _reference_debug_lines(wav_path, tg_path, row, gt_words, normalizer):
         f"raw_text words: {len(raw_words)}",
         f"TextGrid words: {len(tg_words)}",
     ]
+    if audio_duration is not None:
+        last_word_end = max((w["end"] for w in gt_words), default=0.0)
+        # MFA can align only the supplied transcript. A large uncovered audio tail
+        # means WER may count real spoken words as insertions.
+        lines.append(f"audio duration: {audio_duration:.2f}s")
+        lines.append(f"last TextGrid word end: {last_word_end:.2f}s")
+        lines.append(f"uncovered audio tail: {max(0.0, audio_duration - last_word_end):.2f}s")
 
     if raw_words == tg_words:
         lines.append("raw_text/TextGrid: match")
@@ -775,7 +782,7 @@ def evaluate():
             global_strict_counts[strict_k]["c"] += c_strict
 
         if args.verbose:
-            print("\n".join(_reference_debug_lines(wav_path, tg_path, row, gt_words, normalizer)))
+            print("\n".join(_reference_debug_lines(wav_path, tg_path, row, gt_words, normalizer, audio_duration)))
             print("Pred: " + normalized_prediction)
             print(
                 "Strict Preds: "
