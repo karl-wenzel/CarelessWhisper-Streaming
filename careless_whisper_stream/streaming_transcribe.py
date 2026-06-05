@@ -93,7 +93,6 @@ def transcribe(
     frames = []
 
     extra_gran_blocks = extra_initial_blocks if extra_initial_blocks is not None else model.encoder.extra_gran_blocks
-    task_max_sec_context = max_sec_context if use_sliding_encoder_cache else max_sec_context + 1
 
     # first we'll use
     decoding_options = DecodingOptions(
@@ -109,10 +108,7 @@ def transcribe(
         stream_decode=stream_decode,
         use_kv_cache=sa_kv_cache,
         use_ca_kv_cache=ca_kv_cache,
-        # Long-form legacy streams are reset by this outer loop so it can
-        # preserve accumulated text. Keep DecodingTask just beyond that boundary
-        # to avoid a second, internal reset dropping the previous window first.
-        maximal_seconds_context=task_max_sec_context,
+        maximal_seconds_context=max_sec_context,
         use_sliding_encoder_cache=use_sliding_encoder_cache,
         streaming_timestamps=streaming_timestamps,
         force_first_tokens_timestamps=force_first_tokens_timestamps,
