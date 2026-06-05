@@ -78,6 +78,52 @@ class EncoderAlibiTests(unittest.TestCase):
         }
         self.assertEqual(cached_lengths, {6})
 
+    def test_alibi_recomputed_cache_matches_full_prefix_masked_encoder(self):
+        torch.manual_seed(0)
+        model = StreamingWhisper(
+            tiny_dims(n_audio_ctx=16),
+            gran=5,
+            rank=2,
+            extra_gran_blocks=1,
+            encoder_positional_mode="alibi",
+        )
+        model.eval()
+        model.encoder._use_mask(True)
+        mel = torch.randn(1, model.dims.n_mels, 30)
+        overlap_frames = model.gran * (1 + model.extra_gran_blocks)
+
+        full_prefix_chunks = []
+        model.encoder._use_stream(False)
+        for prefix_frames, new_frames in ((10, 10), (15, model.gran + overlap_frames)):
+            full_out = model.encoder(
+                mel[..., : prefix_frames * 2],
+                index=[0, prefix_frames],
+                mask=True,
+            )
+            full_prefix_chunks.append(full_out[:, -new_frames:])
+
+        model.encoder._use_stream(True)
+        cache, hooks = model.install_encoder_kv_cache_hooks()
+        cached_chunks = []
+        try:
+            cached_chunks.append(model.encoder(mel[..., :20], kv_cache=cache, mask=None))
+            model.prune_encoder_kv_cache_tail(cache, overlap_frames)
+            original_gran = model.encoder.gran
+            model.encoder.gran = original_gran + overlap_frames
+            try:
+                cached_chunks.append(model.encoder(mel[..., :30], kv_cache=cache, mask=True))
+            finally:
+                model.encoder.gran = original_gran
+        finally:
+            for hook in hooks:
+                hook.remove()
+
+        for cached, expected in zip(cached_chunks, full_prefix_chunks):
+            self.assertTrue(
+                torch.allclose(cached, expected, atol=1e-5),
+                f"max diff={torch.max(torch.abs(cached - expected)).item()}",
+            )
+
     def test_alibi_sliding_encoder_cache_prunes_kv_and_tracks_offsets(self):
         model = StreamingWhisper(
             tiny_dims(n_audio_ctx=4),

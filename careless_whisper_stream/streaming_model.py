@@ -589,6 +589,14 @@ class StreamingWhisper(Whisper):
         for module, value in list(cache.items()):
             if torch.is_tensor(value):
                 cache[module] = value[:, frames_to_prune:].detach()
+
+    def prune_encoder_kv_cache_tail(self, cache: dict, frames_to_prune: int):
+        if frames_to_prune <= 0:
+            return
+
+        for module, value in list(cache.items()):
+            if torch.is_tensor(value):
+                cache[module] = value[:, :-frames_to_prune].detach()
     
     def install_decoder_kv_cache_hooks(self, cache = None):
         cache = {**cache} if cache is not None else {}
@@ -652,6 +660,14 @@ class StreamingWhisper(Whisper):
         for module, value in list(cache.items()):
             if torch.is_tensor(value):
                 cache[module] = value[:, frames_to_prune:].detach()
+
+    def prune_cross_attn_kv_cache_tail(self, cache: dict, frames_to_prune: int):
+        if frames_to_prune <= 0:
+            return
+
+        for module, value in list(cache.items()):
+            if torch.is_tensor(value):
+                cache[module] = value[:, :-frames_to_prune].detach()
 
     # For non-causal decoding compatibility
     def install_kv_cache_hooks(self, cache: Optional[dict] = None):

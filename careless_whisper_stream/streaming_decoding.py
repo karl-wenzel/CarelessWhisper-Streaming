@@ -899,6 +899,11 @@ class DecodingTask:
         self.index = 0
         self.mel_start_encoder_frame = 0
         self.last_encoder_cache_prune = 0
+        self.last_encoder_cache_overlap = 0
+        # Requirement: cached streaming must match full-prefix encoding. The
+        # conv stack's right boundary affects the final visible encoder block,
+        # so cached boundary frames are recomputed once future mel exists.
+        self.encoder_recompute_overlap_frames = self.options.gran * (1 + self.options.look_ahead_blocks)
 
         # repeat text tensors by the group size, for beam search or best-of-n sampling 
         self.tokens: Tensor = torch.tensor([self.initial_tokens]) # no need to use repeat, batch is meaningless in stream.
@@ -1053,8 +1058,17 @@ class DecodingTask:
         if self.options.fp16:
             mel = mel.half()
 
+        overlap_frames = self._rollback_encoder_cache_for_recompute()
         encoder_cache_offset = self.encoder_cache_state.cached_frames
-        audio_features: Tensor = self.model.encoder(mel, kv_cache=self.enc_kv_cache, mask=None)
+        original_gran = self.model.encoder.gran
+        if overlap_frames > 0:
+            self.model.encoder.gran = original_gran + overlap_frames
+
+        try:
+            encoder_mask = True if overlap_frames > 0 else None
+            audio_features: Tensor = self.model.encoder(mel, kv_cache=self.enc_kv_cache, mask=encoder_mask)
+        finally:
+            self.model.encoder.gran = original_gran
         
         if audio_features.dtype != (
             torch.float16 if self.options.fp16 else torch.float32
@@ -1071,6 +1085,21 @@ class DecodingTask:
             return audio_features
 
         self._append_audio_features(audio_features, encoder_cache_offset, self.last_encoder_cache_prune)
+
+    def _rollback_encoder_cache_for_recompute(self) -> int:
+        cached_frames = self.encoder_cache_state.cached_frames
+        overlap_frames = min(self.encoder_recompute_overlap_frames, cached_frames)
+        self.last_encoder_cache_overlap = overlap_frames
+        if overlap_frames <= 0:
+            return 0
+
+        self.model.prune_encoder_kv_cache_tail(self.enc_kv_cache, overlap_frames)
+        self.encoder_cache_state.cached_frames -= overlap_frames
+
+        if self.options.use_sliding_encoder_cache:
+            self.audio_features = self.audio_features[:, :-overlap_frames].detach()
+
+        return overlap_frames
 
     def _append_audio_features(self, audio_features: Tensor, start_index: int, frames_to_prune: int):
         if self.options.use_sliding_encoder_cache:
@@ -1314,6 +1343,11 @@ class DecodingTask:
             sum_logprobs, no_speech_probs = self._main_loop(decoder_audio_features)
         else:
             audio_features = self._get_audio_features(self.mel)
+            if self.last_encoder_cache_overlap > 0:
+                self.model.prune_cross_attn_kv_cache_tail(
+                    self.ca_kv_cache,
+                    self.last_encoder_cache_overlap,
+                )
             sum_logprobs, no_speech_probs = self._main_loop(audio_features)
             if self.options.use_sliding_encoder_cache:
                 self.model.prune_cross_attn_kv_cache(self.ca_kv_cache, self.last_encoder_cache_prune)
