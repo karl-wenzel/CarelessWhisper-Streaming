@@ -5,15 +5,32 @@ import argparse
 import subprocess
 import json
 import csv
+from concurrent.futures import ThreadPoolExecutor
 from statistics import mean, median, stdev
 import numpy as np
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
+try:
+    import soundfile as sf
+except ImportError:
+    sf = None
+
 AUDIO_EXTENSIONS = {".flac", ".mp3", ".wav", ".wave"}
+DEFAULT_WORKERS = max(1, min(32, (os.cpu_count() or 1) * 2))
 
 
 def get_audio_duration(path):
+    # Fast path for large dataset scans: WAV/FLAC duration can usually be read
+    # from container metadata without starting one ffprobe process per file.
+    if sf is not None:
+        try:
+            info = sf.info(path)
+            if info.samplerate > 0:
+                return float(info.frames / info.samplerate)
+        except Exception:
+            pass
+
     try:
         result = subprocess.run(
             [
@@ -25,16 +42,26 @@ def get_audio_duration(path):
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True
+            text=True,
+            check=True
         )
         return float(result.stdout.strip())
-    except:
+    except Exception:
         return None
 
 
-def scan_audio_files(folder):
+def scan_audio_files(folder, exclude_dirs=None):
+    exclude_dirs = {os.path.abspath(d) for d in (exclude_dirs or [])}
     audio_files = []
-    for root, _, files in os.walk(folder):
+    for root, dirs, files in os.walk(folder):
+        dirs[:] = [
+            d for d in dirs
+            if os.path.abspath(os.path.join(root, d)) not in exclude_dirs
+        ]
+
+        if os.path.abspath(root) in exclude_dirs:
+            continue
+
         for f in files:
             if os.path.splitext(f)[1].lower() in AUDIO_EXTENSIONS:
                 audio_files.append(os.path.join(root, f))
@@ -82,18 +109,37 @@ def save_csv(durations, out_path):
             writer.writerow([i, d])
 
 
-def process_dataset(folder, name, stats_dir):
+def collect_durations(files, workers):
+    if workers <= 1:
+        durations = []
+        for f in tqdm(files, desc="Processing audio"):
+            d = get_audio_duration(f)
+            if d is not None:
+                durations.append(d)
+        return durations
+
+    # Duration probing is mostly file I/O plus subprocess fallback, so threads
+    # improve throughput without forcing every path to be multiprocessing-safe.
+    durations = []
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        for d in tqdm(
+            executor.map(get_audio_duration, files),
+            total=len(files),
+            desc="Processing audio",
+        ):
+            if d is not None:
+                durations.append(d)
+
+    return durations
+
+
+def process_dataset(folder, name, stats_dir, workers):
 
     print(f"\nScanning dataset: {name}")
 
-    files = scan_audio_files(folder)
+    files = scan_audio_files(folder, exclude_dirs=[stats_dir])
 
-    durations = []
-
-    for f in tqdm(files, desc="Processing audio"):
-        d = get_audio_duration(f)
-        if d is not None:
-            durations.append(d)
+    durations = collect_durations(files, workers)
 
     if not durations:
         return None
@@ -124,6 +170,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("folder")
     parser.add_argument("-multiple", action="store_true")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=DEFAULT_WORKERS,
+        help=f"parallel duration probes to run (default: {DEFAULT_WORKERS})",
+    )
 
     args = parser.parse_args()
 
@@ -137,7 +189,7 @@ def main():
     if not args.multiple:
 
         name = os.path.basename(base_folder)
-        stats = process_dataset(base_folder, name, stats_dir)
+        stats = process_dataset(base_folder, name, stats_dir, args.workers)
 
         output[name] = stats
 
@@ -145,9 +197,9 @@ def main():
 
         for entry in os.scandir(base_folder):
 
-            if entry.is_dir():
+            if entry.is_dir() and os.path.abspath(entry.path) != os.path.abspath(stats_dir):
 
-                stats = process_dataset(entry.path, entry.name, stats_dir)
+                stats = process_dataset(entry.path, entry.name, stats_dir, args.workers)
 
                 if stats:
                     output[entry.name] = stats
