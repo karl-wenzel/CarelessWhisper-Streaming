@@ -1,4 +1,5 @@
 import argparse
+import difflib
 import json
 import os
 import re
@@ -402,6 +403,50 @@ def _reference_text_for_sample(row, gt_words, normalizer) -> str:
     return _normalize_for_eval(" ".join([w["word"] for w in gt_words]), normalizer)
 
 
+def _reference_debug_lines(wav_path, tg_path, row, gt_words, normalizer):
+    """
+    Build compact verbose diagnostics for suspected REVLONG reference mismatches.
+
+    Some long-form samples can have CSV text and TextGrid words that are clipped
+    differently, so verbose mode prints the first word-level disagreement.
+    """
+    raw_text = _normalize_for_eval(_row_text(row, "raw_text"), normalizer)
+    tg_text = _normalize_for_eval(" ".join([w["word"] for w in gt_words]), normalizer)
+    raw_words = raw_text.split()
+    tg_words = tg_text.split()
+
+    lines = [
+        f"WAV: {wav_path}",
+        f"TextGrid: {tg_path}",
+        f"raw_text words: {len(raw_words)}",
+        f"TextGrid words: {len(tg_words)}",
+    ]
+
+    if raw_words == tg_words:
+        lines.append("raw_text/TextGrid: match")
+        return lines
+
+    lines.append("raw_text/TextGrid: mismatch")
+    matcher = difflib.SequenceMatcher(a=raw_words, b=tg_words, autojunk=False)
+    for tag, raw_start, raw_end, tg_start, tg_end in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+
+        raw_context_start = max(0, raw_start - 8)
+        raw_context_end = min(len(raw_words), raw_end + 8)
+        tg_context_start = max(0, tg_start - 8)
+        tg_context_end = min(len(tg_words), tg_end + 8)
+        lines.append(
+            f"First ref mismatch: {tag} "
+            f"raw[{raw_start}:{raw_end}] tg[{tg_start}:{tg_end}]"
+        )
+        lines.append("raw context: " + " ".join(raw_words[raw_context_start:raw_context_end]))
+        lines.append("tg context: " + " ".join(tg_words[tg_context_start:tg_context_end]))
+        break
+
+    return lines
+
+
 def _result_text_for_eval(result) -> str:
     full_text = str(getattr(result, "full_text", "") or "").strip()
     if full_text:
@@ -730,6 +775,7 @@ def evaluate():
             global_strict_counts[strict_k]["c"] += c_strict
 
         if args.verbose:
+            print("\n".join(_reference_debug_lines(wav_path, tg_path, row, gt_words, normalizer)))
             print("Pred: " + normalized_prediction)
             print(
                 "Strict Preds: "
