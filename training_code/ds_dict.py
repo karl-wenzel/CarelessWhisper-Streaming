@@ -80,6 +80,6 @@ ds_paths = {
     },
 
     'REVLONG': {
-        'test': "/mtec/local/RevLong/csv/tedlium_train_lf_long.csv",
+        'test': "/mtec/local/RevLong/csv/tedlium_stm_long_35_120_strict.csv",
     }
 }
