@@ -322,7 +322,11 @@ class StreamingAudioEncoder(AudioEncoder):
             )
             absolute_query_start = cache_state.next_frame if cache_state is not None else offset
             absolute_key_start = cache_state.cache_start_frame if cache_state is not None else 0
-            frame_count = self.gran + (int(offset == 0) * (self.extra_gran_blocks * self.gran))
+            is_initial_stream_call = (
+                offset == 0
+                and (cache_state is None or cache_state.total_frames == 0)
+            )
+            frame_count = self.gran + (int(is_initial_stream_call) * (self.extra_gran_blocks * self.gran))
             x = x[:, offset:offset + frame_count] # offset
             if not self._uses_alibi():
                 x = (x + self.positional_embedding[absolute_query_start:absolute_query_start + frame_count]).to(x.dtype)

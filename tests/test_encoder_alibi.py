@@ -124,6 +124,39 @@ class EncoderAlibiTests(unittest.TestCase):
                 f"max diff={torch.max(torch.abs(cached - expected)).item()}",
             )
 
+    def test_sinusoidal_recompute_after_full_initial_rollback_does_not_reapply_start_buffer(self):
+        model = StreamingWhisper(
+            tiny_dims(n_audio_ctx=64),
+            gran=15,
+            rank=2,
+            extra_gran_blocks=1,
+            encoder_positional_mode="sinusoidal",
+        )
+        model.encoder._use_stream(True)
+        state = EncoderCacheState()
+        cache, hooks = model.install_encoder_kv_cache_hooks(cache_state=state)
+        mel = torch.randn(1, model.dims.n_mels, 92)
+
+        try:
+            initial = model.encoder(mel[..., :62], kv_cache=cache, mask=None)
+            state.commit(initial.shape[1])
+
+            overlap_frames = model.gran * (1 + model.extra_gran_blocks)
+            model.prune_encoder_kv_cache_tail(cache, overlap_frames)
+            state.cached_frames -= overlap_frames
+
+            original_gran = model.encoder.gran
+            model.encoder.gran = original_gran + overlap_frames
+            try:
+                recomputed = model.encoder(mel, kv_cache=cache, mask=True)
+            finally:
+                model.encoder.gran = original_gran
+        finally:
+            for hook in hooks:
+                hook.remove()
+
+        self.assertEqual(recomputed.shape[1], model.gran * (2 + model.extra_gran_blocks))
+
     def test_alibi_sliding_encoder_cache_prunes_kv_and_tracks_offsets(self):
         model = StreamingWhisper(
             tiny_dims(n_audio_ctx=4),
