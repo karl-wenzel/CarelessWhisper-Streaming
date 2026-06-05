@@ -517,6 +517,7 @@ def evaluate():
     parser.add_argument("--dataset_fraction", type=float, default=1.0, help="Fraction of the dataset, that will be used. 1.0 (100%) by default.")
     parser.add_argument("--dataset_partition", type=str, default="test", help="The partition of the dataset that will be used for evaluation. 'test' by default.")
     parser.add_argument("--beam_size", type=int, default=5, help="Beam size during inference.")
+    parser.add_argument("--max_sec_context", type=int, default=30, help="Max audio context window in seconds before legacy streaming reset.")
     parser.add_argument("--lang", type=str, default=None, help="Language code for normalization/transcription, e.g. en or de. If omitted, infer from checkpoint or dataset.")
     parser.add_argument(
         "--encoder_positional_mode",
@@ -655,6 +656,7 @@ def evaluate():
             ca_kv_cache=args.ca_kv_cache,
             sa_kv_cache=args.sa_kv_cache,
             use_sliding_encoder_cache=args.use_sliding_encoder_cache,
+            max_sec_context=args.max_sec_context,
             verbose=False
         )
 
@@ -778,6 +780,7 @@ def evaluate():
         "sample_count": int(len(df)),
         "chunk_size": int(args.chunk_size),
         "chunk_duration_sec": float(chunk_duration_sec),
+        "max_sec_context": int(args.max_sec_context),
         "beam_size": int(args.beam_size),
         "strict_k": int(primary_strict_k),
         "strict_k_values": " ".join(str(k) for k in strict_k_values),
