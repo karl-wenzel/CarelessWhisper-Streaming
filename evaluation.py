@@ -536,6 +536,7 @@ def evaluate():
     parser.add_argument("-sa_kv_cache", action="store_true", help="Use self-attention KV cache")
     parser.add_argument("-ca_kv_cache", action="store_true", help="Use cross-attention KV cache")
     parser.add_argument("--use_sliding_encoder_cache", action="store_true", help="Slide encoder KV cache instead of resetting at max context")
+    parser.add_argument("--disable_encoder_kv_cache", action="store_true", help="Recompute the full encoder prefix at every streaming step for cache diagnostics.")
     parser.add_argument("-verbose", action="store_true", help="Prints additional info while evaluating")
     parser.add_argument("-cw", action="store_true", help="Uses a CW whisper base model instead of a local model.")
 
@@ -656,6 +657,7 @@ def evaluate():
             ca_kv_cache=args.ca_kv_cache,
             sa_kv_cache=args.sa_kv_cache,
             use_sliding_encoder_cache=args.use_sliding_encoder_cache,
+            disable_encoder_kv_cache=args.disable_encoder_kv_cache,
             max_sec_context=args.max_sec_context,
             verbose=False
         )
@@ -792,6 +794,7 @@ def evaluate():
         "sa_kv_cache": bool(args.sa_kv_cache),
         "ca_kv_cache": bool(args.ca_kv_cache),
         "use_sliding_encoder_cache": bool(args.use_sliding_encoder_cache),
+        "disable_encoder_kv_cache": bool(args.disable_encoder_kv_cache),
         "wer": float(wer),
         "strict_wer": float(strict_wer),
         "rwer": float(rwer),

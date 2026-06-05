@@ -50,6 +50,7 @@ def transcribe(
     pad_trim: bool = False,
     max_sec_context: int = 30,
     use_sliding_encoder_cache: bool = False,
+    disable_encoder_kv_cache: bool = False,
     streaming_timestamps: bool = False,
     force_first_tokens_timestamps: bool = False,
     verbose: bool = True,
@@ -110,6 +111,7 @@ def transcribe(
         use_ca_kv_cache=ca_kv_cache,
         maximal_seconds_context=max_sec_context,
         use_sliding_encoder_cache=use_sliding_encoder_cache,
+        disable_encoder_kv_cache=disable_encoder_kv_cache,
         streaming_timestamps=streaming_timestamps,
         force_first_tokens_timestamps=force_first_tokens_timestamps,
         verbose=verbose,
@@ -223,6 +225,7 @@ def cli():
     parser.add_argument("--language", type=str, default="en", help="Language of transcription")
     parser.add_argument("--max_sec_context", type=int, default=30, help="Max context window size in seconds")
     parser.add_argument("--use_sliding_encoder_cache", action="store_true", help="Slide encoder KV cache instead of resetting at max context")
+    parser.add_argument("--disable_encoder_kv_cache", action="store_true", help="Recompute full encoder prefix instead of using encoder KV cache")
 
     args = parser.parse_args().__dict__
 

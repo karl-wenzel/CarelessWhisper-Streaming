@@ -70,6 +70,7 @@ class DecodingOptions:
     use_kv_cache: bool = False
     use_ca_kv_cache: bool = False
     use_sliding_encoder_cache: bool = False
+    disable_encoder_kv_cache: bool = False
 
     # streaming decoding args
     stream_decode: bool = True
@@ -919,7 +920,12 @@ class DecodingTask:
             int(self.options.maximal_seconds_context / 0.02),
         )
         self.encoder_cache_max_frames = max_cache_frames if self.options.use_sliding_encoder_cache else None
-        self._init_enc_kv_caching()
+        if self.options.disable_encoder_kv_cache:
+            self.encoder_cache_state = None
+            self.enc_kv_cache = None
+            self.enc_hooks = []
+        else:
+            self._init_enc_kv_caching()
 
         if options.use_ca_kv_cache:
             self._init_ca_kv_caching()
@@ -986,6 +992,11 @@ class DecodingTask:
                 raise ValueError("use_sliding_encoder_cache requires an ALiBi encoder positional mode")
             if not options.single_frame_mel:
                 raise ValueError("use_sliding_encoder_cache requires single_frame_mel=True")
+        if options.disable_encoder_kv_cache:
+            if options.use_sliding_encoder_cache:
+                raise ValueError("disable_encoder_kv_cache is incompatible with use_sliding_encoder_cache")
+            if options.use_ca_kv_cache:
+                raise ValueError("disable_encoder_kv_cache is incompatible with use_ca_kv_cache")
 
         return options
 
@@ -1058,6 +1069,9 @@ class DecodingTask:
         if self.options.fp16:
             mel = mel.half()
 
+        if self.options.disable_encoder_kv_cache:
+            return self._get_audio_features_full_prefix(mel)
+
         overlap_frames = self._rollback_encoder_cache_for_recompute()
         encoder_cache_offset = self.encoder_cache_state.cached_frames
         original_gran = self.model.encoder.gran
@@ -1085,6 +1099,33 @@ class DecodingTask:
             return audio_features
 
         self._append_audio_features(audio_features, encoder_cache_offset, self.last_encoder_cache_prune)
+
+    def _get_audio_features_full_prefix(self, mel: Tensor):
+        was_stream = self.model.encoder.use_stream
+        was_mask = self.model.encoder.use_mask
+        self.model.encoder._use_stream(False)
+        self.model.encoder._use_mask(True)
+        try:
+            audio_features: Tensor = self.model.encoder(
+                mel,
+                index=[0, self.index],
+                mask=True,
+            )
+        finally:
+            self.model.encoder._use_stream(was_stream)
+            self.model.encoder._use_mask(was_mask)
+
+        if audio_features.dtype != (
+            torch.float16 if self.options.fp16 else torch.float32
+        ):
+            return TypeError(
+                f"audio_features has an incorrect dtype: {audio_features.dtype}"
+            )
+
+        self.last_encoder_cache_prune = 0
+        self.last_encoder_cache_overlap = 0
+        self.audio_features.zero_()
+        self.audio_features[:, :audio_features.shape[1]] = audio_features
 
     def _rollback_encoder_cache_for_recompute(self) -> int:
         cached_frames = self.encoder_cache_state.cached_frames
@@ -1235,7 +1276,12 @@ class DecodingTask:
     def _caching_inner_reset(self):
         # Encoder kv cache clean
         self._cleanup_encoder_caching()
-        self._init_enc_kv_caching()
+        if self.options.disable_encoder_kv_cache:
+            self.encoder_cache_state = None
+            self.enc_kv_cache = None
+            self.enc_hooks = []
+        else:
+            self._init_enc_kv_caching()
 
         # Decoder CA kv-cache
         if self.options.use_ca_kv_cache:

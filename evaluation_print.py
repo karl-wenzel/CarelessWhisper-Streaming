@@ -69,6 +69,11 @@ def _format_row(row: dict) -> str:
 
     lines.append(f"BASE MODEL:    {row.get('base_model_name', '')}")
     lines.append(f"CHUNK SIZE:    {row.get('chunk_size', '')}")
+    if "max_sec_context" in row and row.get("max_sec_context", "") != "":
+        lines.append(f"MAX CONTEXT:   {row.get('max_sec_context', '')}s")
+    if "disable_encoder_kv_cache" in row and row.get("disable_encoder_kv_cache", "") != "":
+        cache_mode = "full-prefix" if str(row.get("disable_encoder_kv_cache", "")).lower() == "true" else "kv-cache"
+        lines.append(f"ENC CACHE:     {cache_mode}")
     lines.append(f"MODE:          {'cw' if str(row.get('is_cw_model', '')).lower() == 'true' else 'local'}")
     lines.append(f"WER:           {_fmt_percent(row.get('wer'))}")
     lines.append(f"STRICT WERs:   {_format_strict_display(row)}")
