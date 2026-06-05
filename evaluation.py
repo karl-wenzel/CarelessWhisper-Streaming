@@ -515,6 +515,7 @@ def evaluate():
     parser.add_argument("--multilingual", action="store_true", help="Use multilingual model")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--dataset_fraction", type=float, default=1.0, help="Fraction of the dataset, that will be used. 1.0 (100%) by default.")
+    parser.add_argument("--dataset_sample_count", type=int, default=None, help="Evaluate on exactly this many randomly sampled dataset rows. Mutually exclusive with --dataset_fraction below 1.0.")
     parser.add_argument("--dataset_partition", type=str, default="test", help="The partition of the dataset that will be used for evaluation. 'test' by default.")
     parser.add_argument("--beam_size", type=int, default=5, help="Beam size during inference.")
     parser.add_argument("--max_sec_context", type=int, default=30, help="Max audio context window in seconds before legacy streaming reset.")
@@ -544,6 +545,11 @@ def evaluate():
     parser.add_argument("--dataset_name", type=str, required=True, help="Key from ds_paths in ds_dict.py")
 
     args = parser.parse_args()
+
+    if args.dataset_sample_count is not None and args.dataset_fraction != 1.0:
+        raise ValueError("--dataset_sample_count cannot be used together with --dataset_fraction.")
+    if args.dataset_sample_count is not None and args.dataset_sample_count <= 0:
+        raise ValueError("--dataset_sample_count must be a positive integer.")
 
     if not args.cw:
         ckpt_path = _resolve_checkpoint_path(args.model, args.checkpoint)
@@ -602,7 +608,13 @@ def evaluate():
     print(f"Loading {args.dataset_partition} split from: {csv_path}")
     df = pd.read_csv(csv_path)
 
-    if 0.0 < args.dataset_fraction < 1.0:
+    if args.dataset_sample_count is not None:
+        if args.dataset_sample_count < len(df):
+            df = df.sample(n=args.dataset_sample_count, random_state=42).reset_index(drop=True)
+            print(f"Subsetting dataset to {args.dataset_sample_count} samples.")
+        else:
+            print(f"Warning: dataset_sample_count {args.dataset_sample_count} is >= dataset size {len(df)}. Using full dataset.")
+    elif 0.0 < args.dataset_fraction < 1.0:
         df = df.sample(frac=args.dataset_fraction, random_state=42).reset_index(drop=True)
         print(f"Subsetting dataset to {args.dataset_fraction * 100:.1f}%. New size: {len(df)} samples.")
     elif args.dataset_fraction <= 0 or args.dataset_fraction > 1.0:
@@ -779,6 +791,7 @@ def evaluate():
         "dataset_csv": str(csv_path),
         "partition": args.dataset_partition,
         "fraction": float(args.dataset_fraction),
+        "requested_sample_count": "" if args.dataset_sample_count is None else int(args.dataset_sample_count),
         "sample_count": int(len(df)),
         "chunk_size": int(args.chunk_size),
         "chunk_duration_sec": float(chunk_duration_sec),
