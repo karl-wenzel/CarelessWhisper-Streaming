@@ -74,6 +74,9 @@ def _format_row(row: dict) -> str:
     if "disable_encoder_kv_cache" in row and row.get("disable_encoder_kv_cache", "") != "":
         cache_mode = "full-prefix" if str(row.get("disable_encoder_kv_cache", "")).lower() == "true" else "kv-cache"
         lines.append(f"ENC CACHE:     {cache_mode}")
+    if "reset_decoder_on_encoder_slide" in row and row.get("reset_decoder_on_encoder_slide", "") != "":
+        decoder_rebase = "on-slide" if str(row.get("reset_decoder_on_encoder_slide", "")).lower() == "true" else "continuous"
+        lines.append(f"DEC RESET:     {decoder_rebase}")
     lines.append(f"MODE:          {'cw' if str(row.get('is_cw_model', '')).lower() == 'true' else 'local'}")
     lines.append(f"WER:           {_fmt_percent(row.get('wer'))}")
     lines.append(f"STRICT WERs:   {_format_strict_display(row)}")

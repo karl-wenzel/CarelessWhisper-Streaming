@@ -32,6 +32,7 @@ PRE_EVALUATION_PARAMETER_NAMES = [
     "ca_kv_cache",
     "use_sliding_encoder_cache",
     "disable_encoder_kv_cache",
+    "reset_decoder_on_encoder_slide",
     "cw",
     "dataset_name",
 ]
@@ -58,6 +59,7 @@ TRANSCRIBE_RESULT_CACHE_FIELDS = [
     "compression_ratio",
     "timed_tokens",
     "timed_text",
+    "decoder_rebased",
 ]
 
 

@@ -28,7 +28,6 @@ from evaluation_caching import (
     evaluation_cache_dir,
     file_fingerprint,
     load_cached_run,
-    parameter_classification_summary,
     pre_evaluation_parameters,
     sample_cache_record,
     save_cached_run,
@@ -714,6 +713,7 @@ def evaluate():
     parser.add_argument("-ca_kv_cache", action="store_true", help="Use cross-attention KV cache")
     parser.add_argument("--use_sliding_encoder_cache", action="store_true", help="Slide encoder KV cache instead of resetting at max context")
     parser.add_argument("--disable_encoder_kv_cache", action="store_true", help="Recompute the full encoder prefix at every streaming step for cache diagnostics.")
+    parser.add_argument("--reset_decoder_on_encoder_slide", action="store_true", help="Rebase decoder state when sliding encoder cache crosses a reset boundary.")
     parser.add_argument("--time_bin_wer", action="store_true", help="Print and save interval WER grouped by elapsed-audio time bins.")
     parser.add_argument("--time_bin_seconds", type=float, default=5.0, help="Bin size in seconds for --time_bin_wer.")
     parser.add_argument("-verbose", action="store_true", help="Prints additional info while evaluating")
@@ -732,6 +732,8 @@ def evaluate():
         raise ValueError("--dataset_sample_count must be a positive integer.")
     if args.time_bin_seconds <= 0:
         raise ValueError("--time_bin_seconds must be positive.")
+    if args.reset_decoder_on_encoder_slide and not args.use_sliding_encoder_cache:
+        raise ValueError("--reset_decoder_on_encoder_slide requires --use_sliding_encoder_cache.")
 
     if not args.cw:
         ckpt_path = _resolve_checkpoint_path(args.model, args.checkpoint)
@@ -770,8 +772,6 @@ def evaluate():
     print(f"Encoder positional mode: {encoder_positional_mode}")
     print(f"Strict correction distances: {strict_k_values}")
     print(f"WIR suffix tolerances: {wir_suffix_tolerances}")
-    print("Evaluation cache parameter split:")
-    print(parameter_classification_summary())
 
     # 1. Load Dataset CSV
     if args.dataset_name not in ds_paths:
@@ -906,6 +906,7 @@ def evaluate():
                 sa_kv_cache=args.sa_kv_cache,
                 use_sliding_encoder_cache=args.use_sliding_encoder_cache,
                 disable_encoder_kv_cache=args.disable_encoder_kv_cache,
+                reset_decoder_on_encoder_slide=args.reset_decoder_on_encoder_slide,
                 max_sec_context=args.max_sec_context,
                 verbose=False
             )
@@ -1082,6 +1083,7 @@ def evaluate():
         "ca_kv_cache": bool(args.ca_kv_cache),
         "use_sliding_encoder_cache": bool(args.use_sliding_encoder_cache),
         "disable_encoder_kv_cache": bool(args.disable_encoder_kv_cache),
+        "reset_decoder_on_encoder_slide": bool(args.reset_decoder_on_encoder_slide),
         "wer": float(wer),
         "strict_wer": float(strict_wer),
         "rwer": float(rwer),
