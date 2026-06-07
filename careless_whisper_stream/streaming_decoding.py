@@ -590,6 +590,7 @@ class BeamStreamingDecoder(TokenDecoder):
                  n_beams: int = 1,
                  pad_token: int = None,
                  wait_for_all: bool = False,
+                 sample_begin: int = 4,
                 ):
         self.tokens_per_frame = tokens_per_frame
         self.eot = eot
@@ -598,7 +599,8 @@ class BeamStreamingDecoder(TokenDecoder):
         self.last_logits: list = []
         self.temperature = temperature
         self.tokens_look_back = n_tokens_look_back
-        self.check_token_index = [4 + 1 for _ in range(n_beams)] # Here I'll save the last index that is relevant for checking.
+        self.sample_begin = sample_begin
+        self.check_token_index = [sample_begin + 1 for _ in range(n_beams)] # Here I'll save the last index that is relevant for checking.
         self.n_beams = n_beams
         self.sum_logprobs = torch.zeros(n_beams)
         self.timestamps_map = {}
@@ -616,7 +618,7 @@ class BeamStreamingDecoder(TokenDecoder):
     def _get_last_valid_token_index(self, prefix: Tensor):
         indices = torch.where((prefix == self.eot) | (prefix == self.pad_token))[0]
         last_valid_token_index = (prefix.shape[-1] - 1) if indices.shape == torch.Size([0]) else (indices.min().item() - 1)
-        last_valid_token_index = max(last_valid_token_index, 3)
+        last_valid_token_index = max(last_valid_token_index, self.sample_begin - 1)
         
         return last_valid_token_index
 
@@ -631,7 +633,8 @@ class BeamStreamingDecoder(TokenDecoder):
         if not check_tokens: 
             return last_valid_token_index, True
 
-        examined_prob_indices = range(max(last_valid_token_index - self.tokens_look_back, 3), last_valid_token_index)
+        first_generated_prob_index = self.sample_begin - 1
+        examined_prob_indices = range(max(last_valid_token_index - self.tokens_look_back, first_generated_prob_index), last_valid_token_index)
         for examined_prob_index in examined_prob_indices:
             
             examined_token_index = examined_prob_index + 1
@@ -661,7 +664,8 @@ class BeamStreamingDecoder(TokenDecoder):
         if not check_tokens: 
             return last_valid_token_index, True
         
-        examined_prob_indices = range(max(last_valid_token_index - self.tokens_look_back, 3), last_valid_token_index)
+        first_generated_prob_index = self.sample_begin - 1
+        examined_prob_indices = range(max(last_valid_token_index - self.tokens_look_back, first_generated_prob_index), last_valid_token_index)
         for examined_prob_index in examined_prob_indices:
             examined_token_index = examined_prob_index + 1
             examined_token = prefix[examined_token_index]
@@ -703,7 +707,21 @@ class BeamStreamingDecoder(TokenDecoder):
 
             # Calculate candidates from the last token index we should check.
             for logprob, token in zip(*logprobs[beam, sampling_index].topk(self.n_beams + 1)):
-                new_logprob = (logprobs[beam, range(3, sampling_index - 1), tokens[beam, 4:sampling_index]].sum() + logprob).item()
+                first_generated_prob_index = self.sample_begin - 1
+                if sampling_index > first_generated_prob_index:
+                    score_positions = torch.arange(
+                        first_generated_prob_index,
+                        sampling_index,
+                        device=tokens.device,
+                    )
+                    score_tokens = tokens[
+                        beam,
+                        first_generated_prob_index + 1 : sampling_index + 1,
+                    ]
+                    prefix_logprob = logprobs[beam, score_positions, score_tokens].sum()
+                else:
+                    prefix_logprob = logprob.new_tensor(0.0)
+                new_logprob = (prefix_logprob + logprob).item()
                 
                 token_index = sampling_index + 1
                 if token_index == len(prefix):
@@ -765,7 +783,7 @@ class BeamStreamingDecoder(TokenDecoder):
         return tokens, completed
 
     def reset(self):
-        self.check_token_index = -self.tokens_look_back
+        self.check_token_index = self.sample_begin - self.tokens_look_back
 
     def finalize(self, preceding_tokens: Tensor, sum_logprobs: Tensor):
         if not self.wait_for_all:
@@ -833,6 +851,83 @@ class SuppressTokens(LogitFilter):
         logits[..., self.suppress_tokens] = -np.inf
 
 
+class ApplyStreamingTimestampRules(LogitFilter):
+    def __init__(
+        self,
+        tokenizer: Tokenizer,
+        sample_begin: int,
+        max_initial_timestamp_index: Optional[int],
+    ):
+        self.tokenizer = tokenizer
+        self.sample_begin = sample_begin
+        self.max_initial_timestamp_index = max_initial_timestamp_index
+
+    def _apply_row(self, logits: Tensor, sampled_tokens: Tensor, is_initial_position: bool):
+        if self.tokenizer.no_timestamps is not None:
+            logits[self.tokenizer.no_timestamps] = -np.inf
+
+        seq = sampled_tokens.tolist()
+        last_was_timestamp = (
+            len(seq) >= 1 and seq[-1] >= self.tokenizer.timestamp_begin
+        )
+        penultimate_was_timestamp = (
+            len(seq) < 2 or seq[-2] >= self.tokenizer.timestamp_begin
+        )
+
+        if last_was_timestamp:
+            if penultimate_was_timestamp:
+                logits[self.tokenizer.timestamp_begin :] = -np.inf
+            else:
+                logits[: self.tokenizer.eot] = -np.inf
+
+        timestamps = sampled_tokens[sampled_tokens.ge(self.tokenizer.timestamp_begin)]
+        if timestamps.numel() > 0:
+            if last_was_timestamp and not penultimate_was_timestamp:
+                timestamp_last = timestamps[-1]
+            else:
+                timestamp_last = timestamps[-1] + 1
+            logits[self.tokenizer.timestamp_begin : timestamp_last] = -np.inf
+
+        if is_initial_position:
+            logits[: self.tokenizer.timestamp_begin] = -np.inf
+            if self.max_initial_timestamp_index is not None:
+                last_allowed = (
+                    self.tokenizer.timestamp_begin + self.max_initial_timestamp_index
+                )
+                logits[last_allowed + 1 :] = -np.inf
+
+        logprobs = F.log_softmax(logits.float(), dim=-1)
+        timestamp_logprob = logprobs[self.tokenizer.timestamp_begin :].logsumexp(dim=-1)
+        max_text_token_logprob = logprobs[: self.tokenizer.timestamp_begin].max()
+        if timestamp_logprob > max_text_token_logprob:
+            logits[: self.tokenizer.timestamp_begin] = -np.inf
+
+    def apply(self, logits: Tensor, tokens: Tensor):
+        if logits.ndim == 2:
+            for row in range(tokens.shape[0]):
+                sampled_tokens = tokens[row, self.sample_begin :]
+                self._apply_row(
+                    logits[row],
+                    sampled_tokens,
+                    tokens.shape[1] == self.sample_begin,
+                )
+            return
+
+        if logits.ndim != 3:
+            raise ValueError(f"Expected 2D or 3D logits, got shape {logits.shape}")
+
+        first_sample_position = self.sample_begin - 1
+        for row in range(tokens.shape[0]):
+            for position in range(max(0, first_sample_position), logits.shape[1]):
+                end = min(position + 1, tokens.shape[1])
+                sampled_tokens = tokens[row, self.sample_begin : end]
+                self._apply_row(
+                    logits[row, position],
+                    sampled_tokens,
+                    position == first_sample_position,
+                )
+
+
 class DecodingTask:
     inference: Inference
     sequence_ranker: SequenceRanker
@@ -851,6 +946,7 @@ class DecodingTask:
         )
         self.tokenizer: Tokenizer = tokenizer
         self.options: DecodingOptions = self._verify_options(options)
+        options = self.options
 
         self.n_group: int = options.beam_size or options.best_of or 1
         self.n_ctx: int = model.dims.n_text_ctx
@@ -880,7 +976,7 @@ class DecodingTask:
         elif options.stream_decode and options.beam_size > 0:
             #print(f"Initialized BeamStreamingDecoder with beam size {options.beam_size} and temperature {options.temperature}")
             self.decoder = BeamStreamingDecoder(
-                options.temperature, options.tokens_per_frame, tokenizer.eot, self.inference, options.n_tokens_look_back, options.beam_size, tokenizer.sot_lm, options.wait_for_all
+                options.temperature, options.tokens_per_frame, tokenizer.eot, self.inference, options.n_tokens_look_back, options.beam_size, tokenizer.sot_lm, options.wait_for_all, self.sample_begin
                 # options.temperature, options.tokens_per_frame, tokenizer.eot, self.inference, options.n_tokens_look_back, options.beam_size, tokenizer.eot, options.wait_for_all
             )
         elif options.beam_size is not None and options.beam_size > 0:
@@ -889,7 +985,7 @@ class DecodingTask:
 
             if self.options.localagreement:
                 self.decoder = BeamStreamingDecoder(
-                    options.temperature, options.tokens_per_frame, tokenizer.eot, self.inference, options.n_tokens_look_back, options.beam_size, tokenizer.sot_lm, options.wait_for_all
+                    options.temperature, options.tokens_per_frame, tokenizer.eot, self.inference, options.n_tokens_look_back, options.beam_size, tokenizer.sot_lm, options.wait_for_all, self.sample_begin
                 )
                 self.decoder._mark_check_tokens(False)
         else:
@@ -908,6 +1004,18 @@ class DecodingTask:
             self.logit_filters.append(SuppressBlank(self.tokenizer, self.sample_begin))
         if self.options.suppress_tokens:
             self.logit_filters.append(SuppressTokens(self._get_suppress_tokens()))
+        if not options.without_timestamps:
+            precision = CHUNK_LENGTH / model.dims.n_audio_ctx
+            max_initial_timestamp_index = None
+            if options.max_initial_timestamp:
+                max_initial_timestamp_index = round(
+                    self.options.max_initial_timestamp / precision
+                )
+            self.logit_filters.append(
+                ApplyStreamingTimestampRules(
+                    tokenizer, self.sample_begin, max_initial_timestamp_index
+                )
+            )
         
         self.mel = None
         self.index = 0
@@ -916,6 +1024,7 @@ class DecodingTask:
         self.last_encoder_cache_overlap = 0
         self.decoder_force_first_frame = False
         self.decoder_prune_token_credit = 0.0
+        self.decoder_timestamp_origin_frame = 0
         # Requirement: cached streaming must match full-prefix encoding. The
         # conv stack's right boundary affects the final visible encoder block,
         # so cached boundary frames are recomputed once future mel exists.
@@ -1009,6 +1118,12 @@ class DecodingTask:
                 raise ValueError("use_sliding_encoder_cache requires single_frame_mel=True")
         if options.reset_decoder_on_encoder_slide and not options.use_sliding_encoder_cache:
             raise ValueError("reset_decoder_on_encoder_slide requires use_sliding_encoder_cache")
+        if options.reset_decoder_on_encoder_slide and options.without_timestamps:
+            options = replace(
+                options,
+                without_timestamps=False,
+                streaming_timestamps=True,
+            )
         if options.disable_encoder_kv_cache:
             if options.use_sliding_encoder_cache:
                 raise ValueError("disable_encoder_kv_cache is incompatible with use_sliding_encoder_cache")
@@ -1049,6 +1164,12 @@ class DecodingTask:
         self.initial_tokens = self._get_initial_tokens()
         self.sample_begin = len(self.initial_tokens)
         self.sot_index = self.initial_tokens.index(self.tokenizer.sot)
+        if hasattr(self, "logit_filters"):
+            for logit_filter in self.logit_filters:
+                if hasattr(logit_filter, "sample_begin"):
+                    logit_filter.sample_begin = self.sample_begin
+        if hasattr(self, "decoder") and hasattr(self.decoder, "sample_begin"):
+            self.decoder.sample_begin = self.sample_begin
         if hasattr(self, "inference") and self.inference is not None:
             self.inference.initial_token_length = len(self.initial_tokens)
 
@@ -1266,7 +1387,12 @@ class DecodingTask:
             
             if isinstance(self.decoder, StreamingDecoder) or isinstance(self.decoder, BeamStreamingDecoder):
                 
-                if is_first_frame and self.options.streaming_timestamps and self.options.force_first_tokens_timestamps:
+                if (
+                    is_first_frame
+                    and self.options.streaming_timestamps
+                    and self.options.force_first_tokens_timestamps
+                    and hasattr(self.decoder, "_insert_timestamps")
+                ):
                     self.decoder._insert_timestamps(audio_features, self.tokens, self.options.gran)
                 
                 # if self.tokens.shape[1] > logits.shape[1]:
@@ -1340,7 +1466,8 @@ class DecodingTask:
             self.decoder.finished_sequences = None
 
     def _reset_tokens_to_recent_prefix(self):
-        self.options.prefix = self.tokens[:, len(self.sot_sequence):].tolist()[0][-self.options.n_tokens_look_back-5:]
+        recent_tokens = self.tokens[:, len(self.sot_sequence):].tolist()[0]
+        self.options.prefix = self._strip_timestamp_tokens(recent_tokens)[-self.options.n_tokens_look_back-5:]
 
         # save retired tokens
         self.retired_tokens = self.tokens[:, :len(self.sot_sequence)]
@@ -1349,6 +1476,8 @@ class DecodingTask:
 
         self.tokens = torch.tensor([list(self.initial_tokens)]) # no need to use repeat, batch is meaningless in stream.
         self.tokens = self.tokens.repeat_interleave(self.n_group, dim=0).to(self.model.device)
+        if hasattr(self, "encoder_cache_state") and self.encoder_cache_state is not None:
+            self.decoder_timestamp_origin_frame = self.encoder_cache_state.cache_start_frame
 
     def _option_tokens(self, value) -> list[int]:
         if not value:
@@ -1365,38 +1494,75 @@ class DecodingTask:
                 return row[:index]
         return row
 
-    def _roll_decoder_prefix_after_encoder_prune(self):
-        """
-        Approximate rolling decoder context for sliding encoder eviction.
+    def _is_timestamp_token(self, token: int) -> bool:
+        return token >= self.tokenizer.timestamp_begin
 
-        When the encoder drops old audio frames, move the oldest active decoder
-        prefix tokens into prompt and keep the rest as forced prefix. This keeps
-        the decoder's active prefix roughly aligned with the encoder window
-        without asking a fresh decoder to re-transcribe the whole cache.
-        """
-        self.decoder_prune_token_credit += (
-            self.last_encoder_cache_prune / max(1, self.options.gran)
-        ) * self.options.tokens_per_frame
-        tokens_to_move = int(self.decoder_prune_token_credit)
-        if tokens_to_move <= 0:
-            return
+    def _is_text_context_token(self, token: int) -> bool:
+        special_tokens = {
+            self.tokenizer.eot,
+            self.tokenizer.sot,
+            self.tokenizer.sot_prev,
+            self.tokenizer.sot_lm,
+        }
+        if self.tokenizer.no_timestamps is not None:
+            special_tokens.add(self.tokenizer.no_timestamps)
+        return token < self.tokenizer.timestamp_begin and token not in special_tokens
 
-        valid_tokens = self._valid_decoder_tokens()
-        generated_tokens = valid_tokens[self.sample_begin:]
-        active_prefix_tokens = self._option_tokens(self.options.prefix) + generated_tokens
+    def _strip_timestamp_tokens(self, tokens: list[int]) -> list[int]:
+        return [token for token in tokens if not self._is_timestamp_token(token)]
+
+    def _text_token_count(self, tokens: list[int]) -> int:
+        return sum(1 for token in tokens if self._is_text_context_token(token))
+
+    def _timestamp_split_index_for_encoder_prune(self, tokens: list[int]) -> Optional[int]:
+        if self.options.without_timestamps:
+            return None
+        if not hasattr(self, "encoder_cache_state") or self.encoder_cache_state is None:
+            return None
+
+        cutoff_frame = self.encoder_cache_state.cache_start_frame
+        split_index = None
+        for index, token in enumerate(tokens):
+            if not self._is_timestamp_token(token):
+                continue
+
+            absolute_timestamp_frame = (
+                self.decoder_timestamp_origin_frame
+                + token
+                - self.tokenizer.timestamp_begin
+            )
+            if absolute_timestamp_frame <= cutoff_frame:
+                split_index = index + 1
+
+        if split_index is None or self._text_token_count(tokens[:split_index]) <= 0:
+            return None
+
         min_active_prefix_tokens = self.options.n_tokens_look_back + 5
-        movable_tokens = max(0, len(active_prefix_tokens) - min_active_prefix_tokens)
-        tokens_to_move = min(tokens_to_move, movable_tokens)
-        if tokens_to_move <= 0:
-            return
+        if self._text_token_count(tokens[split_index:]) >= min_active_prefix_tokens:
+            return split_index
 
-        prompt_tokens = self._option_tokens(self.options.prompt)
-        moved_tokens = active_prefix_tokens[:tokens_to_move]
-        kept_prefix_tokens = active_prefix_tokens[tokens_to_move:]
+        # Requirement: decoder rolling must use timestamps when encoder context
+        # slides, but it must not retire the whole active text prefix. Keep the
+        # same look-back safety margin the previous heuristic used.
+        max_movable_text_tokens = self._text_token_count(tokens) - min_active_prefix_tokens
+        if max_movable_text_tokens <= 0:
+            return None
+
+        capped_split_index = 0
+        moved_text_tokens = 0
+        for index, token in enumerate(tokens):
+            if self._is_text_context_token(token):
+                moved_text_tokens += 1
+            if moved_text_tokens > max_movable_text_tokens:
+                break
+            capped_split_index = index + 1
+
+        return min(split_index, capped_split_index)
+
+    def _apply_decoder_prefix_roll(self, prompt_tokens: list[int], kept_prefix_tokens: list[int]):
         max_prompt_tokens = max(0, self.n_ctx // 2 - 1)
-        self.options.prompt = (prompt_tokens + moved_tokens)[-max_prompt_tokens:]
+        self.options.prompt = prompt_tokens[-max_prompt_tokens:]
         self.options.prefix = kept_prefix_tokens
-        self.decoder_prune_token_credit -= tokens_to_move
 
         self._refresh_initial_token_state()
         self.tokens = torch.tensor([list(self.initial_tokens)])
@@ -1406,6 +1572,65 @@ class DecodingTask:
         self.no_speech_probs = [np.nan] * self.n_group
         self._reset_decoder_selection_state()
         self.decoder_force_first_frame = True
+
+    def _roll_decoder_prefix_after_encoder_prune_with_timestamps(self) -> bool:
+        valid_tokens = self._valid_decoder_tokens()
+        generated_tokens = valid_tokens[self.sample_begin:]
+        active_prefix_tokens = self._option_tokens(self.options.prefix) + generated_tokens
+        split_index = self._timestamp_split_index_for_encoder_prune(active_prefix_tokens)
+        if split_index is None:
+            return False
+
+        prompt_tokens = self._option_tokens(self.options.prompt)
+        moved_tokens = self._strip_timestamp_tokens(active_prefix_tokens[:split_index])
+        kept_prefix_tokens = self._strip_timestamp_tokens(active_prefix_tokens[split_index:])
+        if self._text_token_count(moved_tokens) <= 0:
+            return False
+
+        self._apply_decoder_prefix_roll(prompt_tokens + moved_tokens, kept_prefix_tokens)
+        self.decoder_prune_token_credit = 0.0
+        self.decoder_timestamp_origin_frame = self.encoder_cache_state.cache_start_frame
+        return True
+
+    def _roll_decoder_prefix_after_encoder_prune_by_token_credit(self):
+        self.decoder_prune_token_credit += (
+            self.last_encoder_cache_prune / max(1, self.options.gran)
+        ) * self.options.tokens_per_frame
+        tokens_to_move = int(self.decoder_prune_token_credit)
+        if tokens_to_move <= 0:
+            return
+
+        valid_tokens = self._valid_decoder_tokens()
+        generated_tokens = valid_tokens[self.sample_begin:]
+        active_prefix_tokens = self._strip_timestamp_tokens(
+            self._option_tokens(self.options.prefix) + generated_tokens
+        )
+        min_active_prefix_tokens = self.options.n_tokens_look_back + 5
+        movable_tokens = max(0, len(active_prefix_tokens) - min_active_prefix_tokens)
+        tokens_to_move = min(tokens_to_move, movable_tokens)
+        if tokens_to_move <= 0:
+            return
+
+        prompt_tokens = self._option_tokens(self.options.prompt)
+        moved_tokens = active_prefix_tokens[:tokens_to_move]
+        kept_prefix_tokens = active_prefix_tokens[tokens_to_move:]
+        self.decoder_prune_token_credit -= tokens_to_move
+        self._apply_decoder_prefix_roll(prompt_tokens + moved_tokens, kept_prefix_tokens)
+        if hasattr(self, "encoder_cache_state") and self.encoder_cache_state is not None:
+            self.decoder_timestamp_origin_frame = self.encoder_cache_state.cache_start_frame
+
+    def _roll_decoder_prefix_after_encoder_prune(self):
+        """
+        Roll decoder context after sliding encoder eviction.
+
+        Prefer timestamp-token boundaries so text is moved to prompt only when
+        its audio time is outside the retained encoder window. Fall back to the
+        older token-credit heuristic when timestamps are disabled or absent.
+        """
+        if self._roll_decoder_prefix_after_encoder_prune_with_timestamps():
+            return
+
+        self._roll_decoder_prefix_after_encoder_prune_by_token_credit()
 
     def _maybe_roll_decoder_prefix_after_encoder_prune(self):
         if not self.options.reset_decoder_on_encoder_slide:
@@ -1552,6 +1777,8 @@ class DecodingTask:
             timed_tokens = tokens.copy()[0]
             for i, index in enumerate(sorted(self.decoder.timestamps_map.keys())):
                 timed_tokens.insert(index + i + 1, self.tokenizer.timestamp_begin + (self.decoder.timestamps_map[index] // 20))
+        elif not self.options.without_timestamps:
+            timed_tokens = tokens[0]
         else:
             timed_tokens = [50257]
 
