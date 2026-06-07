@@ -71,6 +71,7 @@ class DecodingOptions:
     use_ca_kv_cache: bool = False
     use_sliding_encoder_cache: bool = False
     disable_encoder_kv_cache: bool = False
+    reset_decoder_on_encoder_slide: bool = False
 
     # streaming decoding args
     stream_decode: bool = True
@@ -101,6 +102,7 @@ class DecodingResult:
     timestamps: Dict[Tuple, Tuple] = field(default_factory=tuple)
     timed_tokens: List[int] = field(default_factory=list)
     timed_text: str = ""
+    decoder_rebased: bool = False
 
 
 class Inference:
@@ -901,6 +903,7 @@ class DecodingTask:
         self.mel_start_encoder_frame = 0
         self.last_encoder_cache_prune = 0
         self.last_encoder_cache_overlap = 0
+        self.decoder_rebased_this_run = False
         # Requirement: cached streaming must match full-prefix encoding. The
         # conv stack's right boundary affects the final visible encoder block,
         # so cached boundary frames are recomputed once future mel exists.
@@ -920,6 +923,7 @@ class DecodingTask:
             int(self.options.maximal_seconds_context / 0.02),
         )
         self.encoder_cache_max_frames = max_cache_frames if self.options.use_sliding_encoder_cache else None
+        self.next_decoder_slide_reset_frame = 1
         if self.options.disable_encoder_kv_cache:
             self.encoder_cache_state = None
             self.enc_kv_cache = None
@@ -992,6 +996,8 @@ class DecodingTask:
                 raise ValueError("use_sliding_encoder_cache requires an ALiBi encoder positional mode")
             if not options.single_frame_mel:
                 raise ValueError("use_sliding_encoder_cache requires single_frame_mel=True")
+        if options.reset_decoder_on_encoder_slide and not options.use_sliding_encoder_cache:
+            raise ValueError("reset_decoder_on_encoder_slide requires use_sliding_encoder_cache")
         if options.disable_encoder_kv_cache:
             if options.use_sliding_encoder_cache:
                 raise ValueError("disable_encoder_kv_cache is incompatible with use_sliding_encoder_cache")
@@ -1293,23 +1299,66 @@ class DecodingTask:
             self.inference.cleanup_caching()
             # Caching will be triggered on the logits function
 
+    def _decoder_caching_inner_reset(self):
+        # Decoder CA kv-cache
+        if self.options.use_ca_kv_cache:
+            self._cleanup_ca_caching()
+            self._init_ca_kv_caching()
+
+        # Decoder SA kv-cache
+        if self.options.use_kv_cache:
+            self.inference.cleanup_caching()
+            # Caching will be triggered on the logits function
+
+    def _reset_decoder_selection_state(self):
+        if hasattr(self.decoder, "last_logits"):
+            self.decoder.last_logits = None
+        if hasattr(self.decoder, "finished_sequences"):
+            self.decoder.finished_sequences = {} if isinstance(getattr(self.decoder, "finished_sequences"), dict) else None
+        self.decoder.reset()
+
+    def _reset_tokens_to_recent_prefix(self):
+        self.options.prefix = self.tokens[:, len(self.sot_sequence):].tolist()[0][-self.options.n_tokens_look_back-5:]
+
+        # save retired tokens
+        self.retired_tokens = self.tokens[:, :len(self.sot_sequence)]
+
+        self._refresh_initial_token_state()
+
+        self.tokens = torch.tensor([list(self.initial_tokens)]) # no need to use repeat, batch is meaningless in stream.
+        self.tokens = self.tokens.repeat_interleave(self.n_group, dim=0).to(self.model.device)
+
+    def _reset_decoder_after_encoder_slide(self):
+        # Sliding ALiBi keeps encoder state alive while evicting old audio. Rebase
+        # decoder tokens on the same tiny recent prefix used by the legacy reset,
+        # so decoder context does not keep growing past pruned encoder evidence.
+        self._reset_tokens_to_recent_prefix()
+        self._decoder_caching_inner_reset()
+        self.sum_logprobs = torch.zeros(self.n_group, device=self.model.device)
+        self.no_speech_probs = [np.nan] * self.n_group
+        self._reset_decoder_selection_state()
+        self.decoder_rebased_this_run = True
+        self.next_decoder_slide_reset_frame = self.encoder_cache_state.cache_start_frame + self.encoder_cache_max_frames
+
+    def _maybe_reset_decoder_after_encoder_slide(self):
+        if not self.options.reset_decoder_on_encoder_slide:
+            return
+        if self.last_encoder_cache_prune <= 0:
+            return
+        if self.encoder_cache_state.cache_start_frame < self.next_decoder_slide_reset_frame:
+            return
+
+        self._reset_decoder_after_encoder_slide()
+
     def _reset_after_maximal_context(self, new_mel_frame: Tensor):
         print("Reset context...")
         num_old_mels = (self.options.gran * (self.options.look_ahead_blocks) * 2) + 2 if self.options.look_ahead_blocks > 0 else (self.options.gran * 2) + 2
         self.mel = torch.cat([self.mel[..., -num_old_mels:], new_mel_frame], dim=-1)
-        self.options.prefix = self.tokens[:, len(self.sot_sequence):].tolist()[0][-self.options.n_tokens_look_back-5:]
-        
-        # save retired tokens
-        self.retired_tokens = self.tokens[:, :len(self.sot_sequence)]
+        self._reset_tokens_to_recent_prefix()
 
         print(f"Modifying tokens! {self.options.prefix=}")
 
-        self._refresh_initial_token_state()
         print("Modified tokens!")
-        
-        self.tokens = torch.tensor([list(self.initial_tokens)]) # no need to use repeat, batch is meaningless in stream.
-        self.tokens = self.tokens.repeat_interleave(self.n_group, dim=0).to(self.model.device)
-        
         print(f"Modifying tokens! {self.tokens=}")
         self._caching_inner_reset()
         self.audio_features = torch.zeros((1, self.model.dims.n_audio_ctx, self.model.dims.n_audio_state)).to(self.model.device)
@@ -1318,11 +1367,7 @@ class DecodingTask:
         self.sum_logprobs = torch.zeros(self.n_group, device=self.model.device)
         self.no_speech_probs = [np.nan] * self.n_group
 
-        if hasattr(self.decoder, "last_logits"):
-            self.decoder.last_logits = None
-        if hasattr(self.decoder, "finished_sequences"):
-            self.decoder.finished_sequences = {} if isinstance(getattr(self.decoder, "finished_sequences"), dict) else None
-        self.decoder.reset()
+        self._reset_decoder_selection_state()
 
         print("Finished reset...")
 
@@ -1363,6 +1408,7 @@ class DecodingTask:
             self.mel = torch.cat([self.mel, mel_frame], dim=-1) if self.mel is not None else mel_frame
         else: # we are getting a whole frame [0, t_curr]
             self.mel = mel_frame
+        self.decoder_rebased_this_run = False
         tokenizer: Tokenizer = self.tokenizer
         n_audio: int = mel_frame.shape[0]
 
@@ -1384,6 +1430,7 @@ class DecodingTask:
         # call the main sampling loop
         if not self.options.use_ca_kv_cache:
             self._get_audio_features(self.mel) # encoder forward pass, updates self.audio_features
+            self._maybe_reset_decoder_after_encoder_slide()
             audio_features = self.audio_features
             decoder_audio_features = audio_features if self.options.use_sliding_encoder_cache else audio_features[:, :self.index]
             sum_logprobs, no_speech_probs = self._main_loop(decoder_audio_features)
@@ -1394,6 +1441,7 @@ class DecodingTask:
                     self.ca_kv_cache,
                     self.last_encoder_cache_overlap,
                 )
+            self._maybe_reset_decoder_after_encoder_slide()
             sum_logprobs, no_speech_probs = self._main_loop(audio_features)
             if self.options.use_sliding_encoder_cache:
                 self.model.prune_cross_attn_kv_cache(self.ca_kv_cache, self.last_encoder_cache_prune)
@@ -1454,7 +1502,8 @@ class DecodingTask:
                 compression_ratio=compression_ratio(texts[0]),
                 timestamps=None if not hasattr(self.decoder, 'timestamps_map') else self.decoder.timestamps_map,
                 timed_tokens=timed_tokens,
-                timed_text=self._clean_transcription_timestamps(self.tokenizer.decode_with_timestamps(timed_tokens))
+                timed_text=self._clean_transcription_timestamps(self.tokenizer.decode_with_timestamps(timed_tokens)),
+                decoder_rebased=self.decoder_rebased_this_run,
             )
     
 

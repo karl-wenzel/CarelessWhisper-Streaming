@@ -51,6 +51,7 @@ def transcribe(
     max_sec_context: int = 30,
     use_sliding_encoder_cache: bool = False,
     disable_encoder_kv_cache: bool = False,
+    reset_decoder_on_encoder_slide: bool = False,
     streaming_timestamps: bool = False,
     force_first_tokens_timestamps: bool = False,
     verbose: bool = True,
@@ -112,6 +113,7 @@ def transcribe(
         maximal_seconds_context=max_sec_context,
         use_sliding_encoder_cache=use_sliding_encoder_cache,
         disable_encoder_kv_cache=disable_encoder_kv_cache,
+        reset_decoder_on_encoder_slide=reset_decoder_on_encoder_slide,
         streaming_timestamps=streaming_timestamps,
         force_first_tokens_timestamps=force_first_tokens_timestamps,
         verbose=verbose,
@@ -163,6 +165,8 @@ def transcribe(
 
             # decode given the new mel frame and print results
             result = model.decode(mel_frame.squeeze(0), decoding_options)
+            if getattr(result, "decoder_rebased", False) and len(texts) > 0:
+                full_text += " " + texts[-1].text
             # Long-form simulated streams can cross the legacy 30s reset boundary.
             # Keep the accumulated transcript on the result so evaluators can score
             # the whole sample instead of only the current post-reset window.
@@ -226,6 +230,7 @@ def cli():
     parser.add_argument("--max_sec_context", type=int, default=30, help="Max context window size in seconds")
     parser.add_argument("--use_sliding_encoder_cache", action="store_true", help="Slide encoder KV cache instead of resetting at max context")
     parser.add_argument("--disable_encoder_kv_cache", action="store_true", help="Recompute full encoder prefix instead of using encoder KV cache")
+    parser.add_argument("--reset_decoder_on_encoder_slide", action="store_true", help="Rebase decoder state when sliding encoder cache crosses a reset boundary")
 
     args = parser.parse_args().__dict__
 
