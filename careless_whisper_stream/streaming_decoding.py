@@ -917,6 +917,7 @@ class DecodingTask:
         self.last_encoder_cache_overlap = 0
         self.decoder_rebased_this_run = False
         self.decoder_force_first_frame = False
+        self.sliding_decoder_feature_start = 0
         # Requirement: cached streaming must match full-prefix encoding. The
         # conv stack's right boundary affects the final visible encoder block,
         # so cached boundary frames are recomputed once future mel exists.
@@ -1165,6 +1166,7 @@ class DecodingTask:
         if self.options.use_sliding_encoder_cache:
             retained_features = self.audio_features[:, frames_to_prune:] if frames_to_prune > 0 else self.audio_features
             self.audio_features = torch.cat([retained_features, audio_features], dim=1).detach()
+            self.sliding_decoder_feature_start = max(0, self.sliding_decoder_feature_start - frames_to_prune)
             return
 
         end_index = start_index + audio_features.shape[1]
@@ -1361,6 +1363,12 @@ class DecodingTask:
         self.sum_logprobs = torch.zeros(self.n_group, device=self.model.device)
         self.no_speech_probs = [np.nan] * self.n_group
         self._reset_decoder_selection_state()
+        # After rebasing the decoder, decode only the fresh suffix of the rolling
+        # encoder window. The suffix features still benefited from the full ALiBi
+        # encoder context, but the decoder is not asked to transcribe the whole
+        # 30s cache again.
+        reset_feature_count = self.options.gran * (1 + self.options.look_ahead_blocks)
+        self.sliding_decoder_feature_start = max(0, self.audio_features.shape[1] - reset_feature_count)
         self.decoder_rebased_this_run = True
         self.decoder_force_first_frame = True
         self.next_decoder_slide_reset_frame = self.encoder_cache_state.cache_start_frame + self.encoder_cache_max_frames
@@ -1457,7 +1465,7 @@ class DecodingTask:
             self._get_audio_features(self.mel) # encoder forward pass, updates self.audio_features
             self._maybe_reset_decoder_after_encoder_slide()
             audio_features = self.audio_features
-            decoder_audio_features = audio_features if self.options.use_sliding_encoder_cache else audio_features[:, :self.index]
+            decoder_audio_features = audio_features[:, self.sliding_decoder_feature_start:] if self.options.use_sliding_encoder_cache else audio_features[:, :self.index]
             sum_logprobs, no_speech_probs = self._main_loop(decoder_audio_features)
         else:
             audio_features = self._get_audio_features(self.mel)
