@@ -731,6 +731,18 @@ class BeamStreamingDecoder(TokenDecoder):
             if saved == self.n_beams:
                 break
 
+        if 0 < len(next_tokens) < self.n_beams:
+            # After decoder rebasing all beams restart from the same short
+            # prefix. Duplicate candidate sequences collapse in the score dict,
+            # but downstream beam code still requires exactly n_beams rows.
+            best_token = next_tokens[0]
+            best_source = source_indices[0]
+            best_score = sum_logprobs[0].clone()
+            while len(next_tokens) < self.n_beams:
+                sum_logprobs[len(next_tokens)] = best_score
+                next_tokens.append(best_token.clone())
+                source_indices.append(best_source)
+
         tokens = torch.nn.utils.rnn.pad_sequence(next_tokens, batch_first=True, padding_value=self.pad_token).to(tokens.device)
         self.inference.rearrange_kv_cache(source_indices)
 
