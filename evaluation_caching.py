@@ -1,7 +1,9 @@
+import argparse
 import hashlib
 import json
 import math
 import os
+import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -11,6 +13,7 @@ from typing import Any
 
 EVALUATION_CACHE_VERSION = 1
 MAX_EVALUATION_CACHE_RUNS = 5
+DEFAULT_EVALUATION_FILE = Path(os.environ.get("HOME", str(Path.home()))) / "ma" / "data" / "evaluation.csv"
 
 # Parameters are grouped by whether they can affect model loading, dataset
 # selection, or transcribe(...). Keeping this list explicit makes future eval
@@ -91,6 +94,13 @@ def parameter_classification_summary() -> str:
 
 def evaluation_cache_dir(evaluation_file: str | Path) -> Path:
     return Path(evaluation_file).expanduser().parent / "evaluation_cache"
+
+
+def clear_evaluation_cache(evaluation_file: str | Path = DEFAULT_EVALUATION_FILE) -> Path:
+    cache_dir = evaluation_cache_dir(evaluation_file)
+    if cache_dir.exists():
+        shutil.rmtree(cache_dir)
+    return cache_dir
 
 
 def pre_evaluation_parameters(args) -> dict[str, Any]:
@@ -269,3 +279,23 @@ def _json_safe(value: Any) -> Any:
     if hasattr(value, "item"):
         return _json_safe(value.item())
     return str(value)
+
+
+def cli() -> None:
+    parser = argparse.ArgumentParser(description="Manage cached evaluation transcribe outputs.")
+    parser.add_argument("--evaluation_file", type=str, default=str(DEFAULT_EVALUATION_FILE), help="Evaluation CSV whose sibling cache folder should be managed.")
+    parser.add_argument("--clear", action="store_true", help="Delete the evaluation cache folder.")
+    args = parser.parse_args()
+
+    if args.clear:
+        # The CLI is intentionally limited to the cache folder next to the
+        # selected evaluation CSV, so --clear cannot target arbitrary paths.
+        removed_cache_dir = clear_evaluation_cache(args.evaluation_file)
+        print(f"Evaluation cache cleared: {removed_cache_dir}")
+        return
+
+    parser.print_help()
+
+
+if __name__ == "__main__":
+    cli()
