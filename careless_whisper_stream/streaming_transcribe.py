@@ -31,6 +31,24 @@ class ChunkResultWrapper:
         
     def __getattr__(self, item):
         return getattr(self._original, item)
+
+
+def _append_with_word_overlap(prefix: str, suffix: str, max_overlap_words: int = 64) -> str:
+    prefix_words = str(prefix or "").strip().split()
+    suffix_words = str(suffix or "").strip().split()
+    if not prefix_words:
+        return " ".join(suffix_words)
+    if not suffix_words:
+        return " ".join(prefix_words)
+
+    max_overlap = min(max_overlap_words, len(prefix_words), len(suffix_words))
+    overlap = 0
+    for size in range(max_overlap, 0, -1):
+        if prefix_words[-size:] == suffix_words[:size]:
+            overlap = size
+            break
+
+    return " ".join(prefix_words + suffix_words[overlap:])
         
 def transcribe(
     model: "StreamingWhisper" = None,
@@ -151,7 +169,8 @@ def transcribe(
                 frames.extend(frame.tolist())
                 model.reset(use_stream=True)
                 streamed_spectrogram.reset()
-                full_text += " " + texts[-1].text if len(texts) > 0 else ""
+                if len(texts) > 0:
+                    full_text = _append_with_word_overlap(full_text, texts[-1].text)
 
             if get_times:
                 torch.cuda.synchronize()
@@ -166,11 +185,11 @@ def transcribe(
             # decode given the new mel frame and print results
             result = model.decode(mel_frame.squeeze(0), decoding_options)
             if getattr(result, "decoder_rebased", False) and len(texts) > 0:
-                full_text += " " + texts[-1].text
+                full_text = _append_with_word_overlap(full_text, texts[-1].text)
             # Long-form simulated streams can cross the legacy 30s reset boundary.
             # Keep the accumulated transcript on the result so evaluators can score
             # the whole sample instead of only the current post-reset window.
-            result.full_text = (full_text + " " + result.text).strip()
+            result.full_text = _append_with_word_overlap(full_text, result.text)
             
             chunk_end_time = time.perf_counter()
             processing_latency = chunk_end_time - chunk_start_time
