@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from typing import Any
 
 
-EVALUATION_CACHE_VERSION = 2
+EVALUATION_CACHE_VERSION = 3
 MAX_EVALUATION_CACHE_RUNS = 5
 DEFAULT_EVALUATION_FILE = Path(os.environ.get("HOME", str(Path.home()))) / "ma" / "data" / "evaluation.csv"
 
@@ -62,7 +62,6 @@ TRANSCRIBE_RESULT_CACHE_FIELDS = [
     "compression_ratio",
     "timed_tokens",
     "timed_text",
-    "decoder_rebased",
 ]
 
 

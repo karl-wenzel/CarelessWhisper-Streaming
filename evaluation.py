@@ -715,7 +715,7 @@ def evaluate():
     parser.add_argument("-ca_kv_cache", action="store_true", help="Use cross-attention KV cache")
     parser.add_argument("--use_sliding_encoder_cache", action="store_true", help="Slide encoder KV cache instead of resetting at max context")
     parser.add_argument("--disable_encoder_kv_cache", action="store_true", help="Recompute the full encoder prefix at every streaming step for cache diagnostics.")
-    parser.add_argument("--reset_decoder_on_encoder_slide", action="store_true", help="Rebase decoder state when sliding encoder cache crosses a reset boundary.")
+    parser.add_argument("--reset_decoder_on_encoder_slide", action="store_true", help="Roll decoder prefix tokens into prompt as sliding encoder cache prunes old audio.")
     parser.add_argument("--time_bin_wer", action="store_true", help="Print and save interval WER grouped by elapsed-audio time bins.")
     parser.add_argument("--time_bin_seconds", type=float, default=5.0, help="Bin size in seconds for --time_bin_wer.")
     parser.add_argument("-verbose", action="store_true", help="Prints additional info while evaluating")

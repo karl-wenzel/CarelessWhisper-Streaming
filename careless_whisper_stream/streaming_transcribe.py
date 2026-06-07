@@ -31,24 +31,6 @@ class ChunkResultWrapper:
         
     def __getattr__(self, item):
         return getattr(self._original, item)
-
-
-def _append_with_word_overlap(prefix: str, suffix: str, max_overlap_words: int = 64) -> str:
-    prefix_words = str(prefix or "").strip().split()
-    suffix_words = str(suffix or "").strip().split()
-    if not prefix_words:
-        return " ".join(suffix_words)
-    if not suffix_words:
-        return " ".join(prefix_words)
-
-    max_overlap = min(max_overlap_words, len(prefix_words), len(suffix_words))
-    overlap = 0
-    for size in range(max_overlap, 0, -1):
-        if prefix_words[-size:] == suffix_words[:size]:
-            overlap = size
-            break
-
-    return " ".join(prefix_words + suffix_words[overlap:])
         
 def transcribe(
     model: "StreamingWhisper" = None,
@@ -169,8 +151,7 @@ def transcribe(
                 frames.extend(frame.tolist())
                 model.reset(use_stream=True)
                 streamed_spectrogram.reset()
-                if len(texts) > 0:
-                    full_text = _append_with_word_overlap(full_text, texts[-1].text)
+                full_text += " " + texts[-1].text if len(texts) > 0 else ""
 
             if get_times:
                 torch.cuda.synchronize()
@@ -184,12 +165,10 @@ def transcribe(
 
             # decode given the new mel frame and print results
             result = model.decode(mel_frame.squeeze(0), decoding_options)
-            if getattr(result, "decoder_rebased", False) and len(texts) > 0:
-                full_text = _append_with_word_overlap(full_text, texts[-1].text)
             # Long-form simulated streams can cross the legacy 30s reset boundary.
             # Keep the accumulated transcript on the result so evaluators can score
             # the whole sample instead of only the current post-reset window.
-            result.full_text = _append_with_word_overlap(full_text, result.text)
+            result.full_text = (full_text + " " + result.text).strip()
             
             chunk_end_time = time.perf_counter()
             processing_latency = chunk_end_time - chunk_start_time
@@ -249,7 +228,7 @@ def cli():
     parser.add_argument("--max_sec_context", type=int, default=30, help="Max context window size in seconds")
     parser.add_argument("--use_sliding_encoder_cache", action="store_true", help="Slide encoder KV cache instead of resetting at max context")
     parser.add_argument("--disable_encoder_kv_cache", action="store_true", help="Recompute full encoder prefix instead of using encoder KV cache")
-    parser.add_argument("--reset_decoder_on_encoder_slide", action="store_true", help="Rebase decoder state when sliding encoder cache crosses a reset boundary")
+    parser.add_argument("--reset_decoder_on_encoder_slide", action="store_true", help="Roll decoder prefix tokens into prompt as sliding encoder cache prunes old audio")
 
     args = parser.parse_args().__dict__
 
