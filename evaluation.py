@@ -552,6 +552,97 @@ def _format_strict_summary(
     return " | ".join(summary_parts)
 
 
+def _format_time_bin_wer_summary(time_bin_counts: dict[int, dict[str, int]], bin_seconds: float) -> str:
+    summary_parts = []
+    for bin_index in sorted(time_bin_counts):
+        counts = time_bin_counts[bin_index]
+        denominator = counts["c"] + counts["d"] + counts["s"]
+        errors = counts["i"] + counts["d"] + counts["s"]
+        wer_text = f"{(errors / denominator) * 100:.2f}%" if denominator > 0 else "N/A"
+        start = bin_index * bin_seconds
+        end = start + bin_seconds
+        summary_parts.append(
+            f"{start:g}-{end:g}s: {wer_text} "
+            f"(samples={counts['samples']}, I/D/S/C={counts['i']}/{counts['d']}/{counts['s']}/{counts['c']})"
+        )
+    return " | ".join(summary_parts)
+
+
+def _hypothesis_at_or_before(results, time_sec: float, chunk_duration_sec: float, normalizer) -> str:
+    if not results or time_sec <= 0:
+        return ""
+
+    result_index = int((time_sec / chunk_duration_sec) + 1e-9) - 1
+    if result_index < 0:
+        return ""
+
+    result_index = min(result_index, len(results) - 1)
+    return _normalize_for_eval(_result_text_for_eval(results[result_index]), normalizer)
+
+
+def _new_hypothesis_text_for_interval(
+    results,
+    start_sec: float,
+    end_sec: float,
+    chunk_duration_sec: float,
+    normalizer,
+) -> str:
+    start_words = _hypothesis_at_or_before(results, start_sec, chunk_duration_sec, normalizer).split()
+    end_words = _hypothesis_at_or_before(results, end_sec, chunk_duration_sec, normalizer).split()
+
+    # Time-bin WER is meant to isolate intervals. Since streaming hypotheses are
+    # cumulative, remove the words that were already emitted at bin start so
+    # 0-5s content is not scored again in the 5-10s bin.
+    return " ".join(end_words[len(start_words):])
+
+
+def _reference_text_for_interval(gt_words, start_sec: float, end_sec: float, normalizer) -> str:
+    interval_words = [
+        w["word"]
+        for w in gt_words
+        if start_sec <= w["start"] < end_sec
+    ]
+    return _normalize_for_eval(" ".join(interval_words), normalizer)
+
+
+def _accumulate_time_bin_wer(
+    time_bin_counts: dict[int, dict[str, int]],
+    results,
+    gt_words,
+    audio_duration: float,
+    chunk_duration_sec: float,
+    bin_seconds: float,
+    normalizer,
+) -> None:
+    if not results:
+        return
+
+    bin_count = int(np.ceil(audio_duration / bin_seconds))
+    for bin_index in range(bin_count):
+        start_sec = bin_index * bin_seconds
+        end_sec = min(audio_duration, start_sec + bin_seconds)
+        hypothesis_end_sec = len(results) * chunk_duration_sec if bin_index == bin_count - 1 else end_sec
+        reference_text = _reference_text_for_interval(gt_words, start_sec, end_sec, normalizer)
+        hypothesis_text = _new_hypothesis_text_for_interval(
+            results,
+            start_sec,
+            hypothesis_end_sec,
+            chunk_duration_sec,
+            normalizer,
+        )
+
+        i, d, s, c = calculate_idsc(reference_text, hypothesis_text)
+        counts = time_bin_counts.setdefault(
+            bin_index,
+            {"i": 0, "d": 0, "s": 0, "c": 0, "samples": 0},
+        )
+        counts["i"] += i
+        counts["d"] += d
+        counts["s"] += s
+        counts["c"] += c
+        counts["samples"] += 1
+
+
 def evaluate():
     parser = argparse.ArgumentParser(description="Evaluate CarelessWhisper WER on a dataset")
 
@@ -590,6 +681,8 @@ def evaluate():
     parser.add_argument("-ca_kv_cache", action="store_true", help="Use cross-attention KV cache")
     parser.add_argument("--use_sliding_encoder_cache", action="store_true", help="Slide encoder KV cache instead of resetting at max context")
     parser.add_argument("--disable_encoder_kv_cache", action="store_true", help="Recompute the full encoder prefix at every streaming step for cache diagnostics.")
+    parser.add_argument("--time_bin_wer", action="store_true", help="Print and save interval WER grouped by elapsed-audio time bins.")
+    parser.add_argument("--time_bin_seconds", type=float, default=5.0, help="Bin size in seconds for --time_bin_wer.")
     parser.add_argument("-verbose", action="store_true", help="Prints additional info while evaluating")
     parser.add_argument("-cw", action="store_true", help="Uses a CW whisper base model instead of a local model.")
 
@@ -602,6 +695,8 @@ def evaluate():
         raise ValueError("--dataset_sample_count cannot be used together with --dataset_fraction.")
     if args.dataset_sample_count is not None and args.dataset_sample_count <= 0:
         raise ValueError("--dataset_sample_count must be a positive integer.")
+    if args.time_bin_seconds <= 0:
+        raise ValueError("--time_bin_seconds must be positive.")
 
     if not args.cw:
         ckpt_path = _resolve_checkpoint_path(args.model, args.checkpoint)
@@ -683,6 +778,7 @@ def evaluate():
         suffix_tolerance: {"changed_words": 0, "total_words": 0}
         for suffix_tolerance in wir_suffix_tolerances
     }
+    time_bin_counts = {}
 
     all_chunk_latencies = []
     total_audio_duration_sec = 0.0
@@ -725,6 +821,16 @@ def evaluate():
             max_sec_context=args.max_sec_context,
             verbose=False
         )
+        if args.time_bin_wer:
+            _accumulate_time_bin_wer(
+                time_bin_counts,
+                results,
+                gt_words,
+                audio_duration,
+                chunk_duration_sec,
+                args.time_bin_seconds,
+                normalizer,
+            )
 
         for step, res in enumerate(results):
             hyp_text = _normalize_for_eval(_result_text_for_eval(res), normalizer)
@@ -826,6 +932,11 @@ def evaluate():
             "wir": float(changed_words / total_words if total_words > 0 else 0),
         }
     wir = wir_stats_by_n[0]["wir"]
+    time_bin_wer_summary = (
+        _format_time_bin_wer_summary(time_bin_counts, args.time_bin_seconds)
+        if args.time_bin_wer
+        else ""
+    )
 
     avg_latency = np.mean(all_chunk_latencies) if all_chunk_latencies else 0
     rtf = total_processing_time_sec / total_audio_duration_sec if total_audio_duration_sec > 0 else 0
@@ -870,6 +981,9 @@ def evaluate():
         "wir_total_words": int(wir_stats_by_n[0]["total_words"]),
         "wir_n_values": " ".join(str(n) for n in wir_suffix_tolerances),
         "wir_summary": _format_wir_summary(wir_stats_by_n),
+        "time_bin_wer_enabled": bool(args.time_bin_wer),
+        "time_bin_seconds": float(args.time_bin_seconds),
+        "time_bin_wer_summary": time_bin_wer_summary,
         "wer_insertions": int(global_wer_i),
         "wer_deletions": int(global_wer_d),
         "wer_substitutions": int(global_wer_s),
@@ -886,6 +1000,10 @@ def evaluate():
 
     append_evaluation_row(evaluation_file, stats)
     print(f"Stats saved to: {evaluation_file}")
+    if args.time_bin_wer:
+        print()
+        print("=== Time-Binned Interval WER ===")
+        print(time_bin_wer_summary.replace(" | ", "\n") if time_bin_wer_summary else "No time-bin WER entries collected.")
     print()
     print_latest_rows(evaluation_file, row_count=1)
 
