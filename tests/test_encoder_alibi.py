@@ -197,6 +197,41 @@ class EncoderAlibiTests(unittest.TestCase):
         self.assertEqual(state.cache_start_frame, 4)
         self.assertEqual(state.total_frames, 8)
 
+    def test_alibi_sliding_recompute_builds_mask_for_transient_overlap(self):
+        model = StreamingWhisper(
+            tiny_dims(n_audio_ctx=4),
+            gran=2,
+            rank=2,
+            extra_gran_blocks=0,
+            encoder_positional_mode="alibi",
+        )
+        model.encoder._use_stream(True)
+        state = EncoderCacheState(use_sliding=True, max_frames=4)
+        cache, hooks = model.install_encoder_kv_cache_hooks(cache_state=state)
+
+        try:
+            mel = torch.randn(1, model.dims.n_mels, 12)
+            first = model.encoder(mel[..., :4], kv_cache=cache, mask=None)
+            state.commit(first.shape[1])
+            second = model.encoder(mel[..., :8], kv_cache=cache, mask=None)
+            state.commit(second.shape[1])
+
+            overlap_frames = model.gran
+            model.prune_encoder_kv_cache_tail(cache, overlap_frames)
+            state.cached_frames -= overlap_frames
+
+            original_gran = model.encoder.gran
+            model.encoder.gran = original_gran + overlap_frames
+            try:
+                recomputed = model.encoder(mel, kv_cache=cache, mask=True)
+            finally:
+                model.encoder.gran = original_gran
+        finally:
+            for hook in hooks:
+                hook.remove()
+
+        self.assertEqual(recomputed.shape, (1, original_gran + overlap_frames, model.dims.n_audio_state))
+
     def test_invalid_encoder_positional_mode_raises(self):
         with self.assertRaisesRegex(ValueError, "encoder_positional_mode"):
             StreamingWhisper(tiny_dims(), encoder_positional_mode="rotary")

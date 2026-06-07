@@ -244,6 +244,7 @@ class StreamingAudioEncoder(AudioEncoder):
 
         self.gran = gran
         self.extra_gran_blocks = extra_gran_blocks
+        self.mask_gran = gran
         self.encoder_positional_mode = validate_encoder_positional_mode(encoder_positional_mode)
         self.register_buffer("alibi_slopes", _alibi_slopes(n_head), persistent=False)
 
@@ -286,6 +287,34 @@ class StreamingAudioEncoder(AudioEncoder):
     def _update_granularity(self, gran: int, extra_gran_blocks: int):
         self.gran = gran
         self.extra_gran_blocks = extra_gran_blocks
+        self.mask_gran = gran
+
+    def _mask_for_context(self, matrix_size: int, device: torch.device) -> Tensor:
+        if matrix_size <= self.mask.shape[0]:
+            return self.mask[:matrix_size, :matrix_size].to(device=device)
+
+        # Sliding encoder cache can briefly exceed n_audio_ctx while recomputing
+        # an overlap block before pruning back to the requested context size.
+        # Build only that temporary larger mask, preserving the original mask
+        # granularity even if self.gran was temporarily enlarged for recompute.
+        block_size = self.mask_gran
+        extra_blocks = self.extra_gran_blocks
+        dynamic_mask = torch.full(
+            (matrix_size, matrix_size),
+            float("-inf"),
+            device=device,
+            dtype=self.mask.dtype,
+        )
+
+        for i in range(0, matrix_size, block_size):
+            if (i // block_size) <= extra_blocks:
+                zero_cols = block_size * (extra_blocks + 1)
+            else:
+                zero_cols = block_size * (extra_blocks + 1) + ((i // block_size) - extra_blocks) * block_size
+
+            dynamic_mask[i:i + block_size, :zero_cols] = 0
+
+        return dynamic_mask
 
     def _build_alibi_bias(
         self,
@@ -356,10 +385,15 @@ class StreamingAudioEncoder(AudioEncoder):
             else None
         )
 
+        mask_context = max(index[1], k_ctx)
+        if isinstance(mask, Tensor):
+            chosen_mask = mask[..., :mask_context, :mask_context]
+        elif (mask is not None) and (self.use_stream or self.use_mask):
+            chosen_mask = self._mask_for_context(mask_context, x.device)
+        else:
+            chosen_mask = None
+
         for block in self.blocks:
-            chosen_mask = mask[..., :index[1], :index[1]] if isinstance(mask, Tensor) else self.mask if ((mask is not None) and (self.use_stream)) or ((mask is not None) and (self.use_mask)) else None
-            # chosen_mask = mask[..., :index[1], :index[1]] if isinstance(mask, Tensor) else self.mask if (mask is not None) else None
-            # print(f"{chosen_mask=}")
             x = block(x, mask=chosen_mask, kv_cache=kv_cache, positional_bias=positional_bias)
             
         x = self.ln_post(x)
