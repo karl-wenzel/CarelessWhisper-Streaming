@@ -904,6 +904,7 @@ class DecodingTask:
         self.last_encoder_cache_prune = 0
         self.last_encoder_cache_overlap = 0
         self.decoder_rebased_this_run = False
+        self.decoder_force_first_frame = False
         # Requirement: cached streaming must match full-prefix encoding. The
         # conv stack's right boundary affects the final visible encoder block,
         # so cached boundary frames are recomputed once future mel exists.
@@ -1200,7 +1201,10 @@ class DecodingTask:
         """
         in streaming we use self.tokens, since we need to keep in context the last tokens we got.
         """
-        is_first_frame = self.index == (self.options.gran * (1 + self.options.look_ahead_blocks))
+        is_first_frame = (
+            self.index == (self.options.gran * (1 + self.options.look_ahead_blocks))
+            or self.decoder_force_first_frame
+        )
         self._set_ca_kv_cache(True)
         beam_indices = None
         # print(f"{audio_features.shape=}")
@@ -1246,6 +1250,7 @@ class DecodingTask:
                 if completed: # ctx is unlimited, we are limited only by i
                     break
         finally:
+            self.decoder_force_first_frame = False
             if self.options.use_kv_cache:
                 self.inference.flush_tokens_from_cache()
             
@@ -1345,6 +1350,7 @@ class DecodingTask:
         self.no_speech_probs = [np.nan] * self.n_group
         self._reset_decoder_selection_state()
         self.decoder_rebased_this_run = True
+        self.decoder_force_first_frame = True
         self.next_decoder_slide_reset_frame = self.encoder_cache_state.cache_start_frame + self.encoder_cache_max_frames
 
     def _maybe_reset_decoder_after_encoder_slide(self):
