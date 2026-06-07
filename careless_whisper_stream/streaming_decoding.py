@@ -1311,11 +1311,18 @@ class DecodingTask:
             # Caching will be triggered on the logits function
 
     def _reset_decoder_selection_state(self):
-        if hasattr(self.decoder, "last_logits"):
-            self.decoder.last_logits = None
-        if hasattr(self.decoder, "finished_sequences"):
-            self.decoder.finished_sequences = {} if isinstance(getattr(self.decoder, "finished_sequences"), dict) else None
         self.decoder.reset()
+        if isinstance(self.decoder, BeamStreamingDecoder):
+            self.decoder.last_logits = []
+            self.decoder.finished_sequences = {}
+            return
+
+        if isinstance(self.decoder, StreamingDecoder):
+            self.decoder.last_logits = None
+            return
+
+        if hasattr(self.decoder, "finished_sequences"):
+            self.decoder.finished_sequences = None
 
     def _reset_tokens_to_recent_prefix(self):
         self.options.prefix = self.tokens[:, len(self.sot_sequence):].tolist()[0][-self.options.n_tokens_look_back-5:]
