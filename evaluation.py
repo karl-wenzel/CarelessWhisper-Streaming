@@ -678,6 +678,8 @@ def _accumulate_time_bin_wer(
 def evaluate():
     parser = argparse.ArgumentParser(description="Evaluate CarelessWhisper WER on a dataset")
 
+    # When adding evaluation parameters, classify them in evaluation_caching.py
+    # and run: python -m unittest tests.test_evaluation_caching_contract
     # Model Setup
     parser.add_argument(
         "--model",
