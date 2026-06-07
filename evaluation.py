@@ -21,6 +21,19 @@ from careless_whisper_stream.normalizers import (
 )
 from careless_whisper_stream.streaming_transcribe import transcribe
 from training_code.ds_dict import ds_paths
+from evaluation_caching import (
+    build_cache_identity,
+    cache_records_to_results,
+    dataset_selection_fingerprint,
+    evaluation_cache_dir,
+    file_fingerprint,
+    load_cached_run,
+    parameter_classification_summary,
+    pre_evaluation_parameters,
+    sample_cache_record,
+    save_cached_run,
+    validate_parameter_classification,
+)
 from evaluation_print import print_latest_rows
 from evaluation_saving import append_evaluation_row
 
@@ -242,6 +255,26 @@ def _resolve_csv_relative_path(csv_path: str, value: str) -> str:
     if os.path.isabs(value):
         return value
     return os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(csv_path)), value))
+
+
+def _cache_dataset_sample_records(df, csv_path: str) -> list[dict]:
+    sample_records = []
+    for sample_index, (_, row) in enumerate(df.iterrows()):
+        wav_path = _resolve_csv_relative_path(csv_path, row["wav_path"])
+        tg_path = _resolve_csv_relative_path(csv_path, row["tg_path"])
+        record = {
+            "sample_index": sample_index,
+            "wav_path": wav_path,
+            "tg_path": tg_path,
+            "wav_file": file_fingerprint(wav_path),
+            "tg_file": file_fingerprint(tg_path),
+        }
+        if "lang" in row and pd.notna(row["lang"]):
+            record["lang"] = _canonicalize_language(row["lang"])
+        if "raw_text" in row and pd.notna(row["raw_text"]):
+            record["raw_text"] = str(row["raw_text"])
+        sample_records.append(record)
+    return sample_records
 
 
 def _infer_language(
@@ -685,11 +718,13 @@ def evaluate():
     parser.add_argument("--time_bin_seconds", type=float, default=5.0, help="Bin size in seconds for --time_bin_wer.")
     parser.add_argument("-verbose", action="store_true", help="Prints additional info while evaluating")
     parser.add_argument("-cw", action="store_true", help="Uses a CW whisper base model instead of a local model.")
+    parser.add_argument("--no_evaluation_cache", action="store_true", help="Always recalculate transcribe outputs instead of reading the evaluation cache.")
 
     # Dataset Setup
     parser.add_argument("--dataset_name", type=str, required=True, help="Key from ds_paths in ds_dict.py")
 
     args = parser.parse_args()
+    validate_parameter_classification(list(vars(args).keys()))
 
     if args.dataset_sample_count is not None and args.dataset_fraction != 1.0:
         raise ValueError("--dataset_sample_count cannot be used together with --dataset_fraction.")
@@ -735,19 +770,10 @@ def evaluate():
     print(f"Encoder positional mode: {encoder_positional_mode}")
     print(f"Strict correction distances: {strict_k_values}")
     print(f"WIR suffix tolerances: {wir_suffix_tolerances}")
+    print("Evaluation cache parameter split:")
+    print(parameter_classification_summary())
 
-    # 1. Load Model
-    model = load_streaming_model(
-        name=args.model if args.cw else base_model_name,
-        gran=args.chunk_size,
-        multilingual=args.multilingual,
-        device=args.device,
-        local_ckpt_path=None if args.cw else str(ckpt_path),
-        encoder_positional_mode=encoder_positional_mode,
-    )
-    model.eval()
-
-    # 2. Load Dataset CSV
+    # 1. Load Dataset CSV
     if args.dataset_name not in ds_paths:
         raise ValueError(f"Dataset {args.dataset_name} not found in ds_dict.py")
 
@@ -766,6 +792,58 @@ def evaluate():
         print(f"Subsetting dataset to {args.dataset_fraction * 100:.1f}%. New size: {len(df)} samples.")
     elif args.dataset_fraction <= 0 or args.dataset_fraction > 1.0:
         print(f"Warning: dataset_fraction {args.dataset_fraction} is out of bounds. Using full dataset.")
+
+    cache_dir = evaluation_cache_dir(evaluation_file)
+    sample_identity_records = _cache_dataset_sample_records(df, csv_path)
+    resolved_cache_context = {
+        "base_model_name": args.model if args.cw else base_model_name,
+        "is_cw_model": bool(args.cw),
+        "checkpoint": "" if ckpt_path is None else ckpt_path.name,
+        "checkpoint_epoch": "" if ckpt_path is None else int(_extract_epoch_from_name(ckpt_path)),
+        "checkpoint_file": file_fingerprint(ckpt_path),
+        "dataset_csv": file_fingerprint(csv_path),
+        "dataset_selection_fingerprint": dataset_selection_fingerprint(sample_identity_records),
+        "default_language": default_language or "",
+        "encoder_positional_mode": encoder_positional_mode,
+        "transcribe_temperature": 0,
+        "transcribe_simulate_stream": True,
+        "transcribe_verbose": False,
+        "chunk_duration_sec": float(args.chunk_size * 0.02),
+    }
+    evaluation_cache_key, evaluation_cache_identity = build_cache_identity(
+        pre_evaluation_parameters(args),
+        resolved_cache_context,
+    )
+    cached_run = None
+    if args.no_evaluation_cache:
+        print("Evaluation cache bypassed by --no_evaluation_cache; transcribe outputs will be recalculated.")
+    else:
+        cached_run = load_cached_run(
+            cache_dir,
+            evaluation_cache_key,
+            expected_sample_count=len(df),
+            expected_identity=evaluation_cache_identity,
+        )
+        if cached_run is not None:
+            print(
+                "EVALUATION CACHE HIT: using cached transcribe outputs "
+                f"from {cache_dir / (evaluation_cache_key + '.json')}"
+            )
+        else:
+            print(f"Evaluation cache miss for key {evaluation_cache_key[:16]}; transcribe outputs will be calculated.")
+
+    model = None
+    if cached_run is None:
+        # 2. Load Model only when cached transcribe outputs are unavailable.
+        model = load_streaming_model(
+            name=args.model if args.cw else base_model_name,
+            gran=args.chunk_size,
+            multilingual=args.multilingual,
+            device=args.device,
+            local_ckpt_path=None if args.cw else str(ckpt_path),
+            encoder_positional_mode=encoder_positional_mode,
+        )
+        model.eval()
 
     global_rwer_num, global_rwer_den = 0, 0
     global_arwer_num, global_arwer_den = 0, 0
@@ -786,12 +864,18 @@ def evaluate():
     predictions, references = [], []
     strict_predictions_by_k = {strict_k: [] for strict_k in strict_k_values}
 
-    chunk_duration_sec = model.encoder.gran * 0.02
+    cached_samples = cached_run.get("samples", []) if cached_run is not None else []
+    cache_samples_to_save = []
+    chunk_duration_sec = (
+        float(resolved_cache_context["chunk_duration_sec"])
+        if cached_run is not None
+        else model.encoder.gran * 0.02
+    )
     print(f"model chunk size (s): {chunk_duration_sec}")
 
     # 3. Inference Loop
     print(f"Starting evaluation on {len(df)} samples...")
-    for _, row in tqdm(df.iterrows(), total=len(df)):
+    for sample_index, (_, row) in enumerate(tqdm(df.iterrows(), total=len(df))):
         wav_path = _resolve_csv_relative_path(csv_path, row["wav_path"])
         tg_path = _resolve_csv_relative_path(csv_path, row["tg_path"])
         row_language = (
@@ -807,20 +891,34 @@ def evaluate():
         gt_words = extract_words_and_times_from_tg(tg_path)
         reference_text = _reference_text_for_sample(row, gt_words, normalizer)
 
-        results = transcribe(
-            model=model,
-            wav_file=wav_path,
-            simulate_stream=True,
-            language=row_language if row_language else ("auto" if args.multilingual else "en"),
-            beam_size=args.beam_size,
-            temperature=0,
-            ca_kv_cache=args.ca_kv_cache,
-            sa_kv_cache=args.sa_kv_cache,
-            use_sliding_encoder_cache=args.use_sliding_encoder_cache,
-            disable_encoder_kv_cache=args.disable_encoder_kv_cache,
-            max_sec_context=args.max_sec_context,
-            verbose=False
-        )
+        if cached_run is not None:
+            cached_sample = cached_samples[sample_index]
+            results = cache_records_to_results(cached_sample.get("results", []))
+        else:
+            results = transcribe(
+                model=model,
+                wav_file=wav_path,
+                simulate_stream=True,
+                language=row_language if row_language else ("auto" if args.multilingual else "en"),
+                beam_size=args.beam_size,
+                temperature=0,
+                ca_kv_cache=args.ca_kv_cache,
+                sa_kv_cache=args.sa_kv_cache,
+                use_sliding_encoder_cache=args.use_sliding_encoder_cache,
+                disable_encoder_kv_cache=args.disable_encoder_kv_cache,
+                max_sec_context=args.max_sec_context,
+                verbose=False
+            )
+            cache_samples_to_save.append(
+                sample_cache_record(
+                    sample_index=sample_index,
+                    wav_path=wav_path,
+                    tg_path=tg_path,
+                    language=row_language,
+                    audio_duration_sec=audio_duration,
+                    results=results,
+                )
+            )
         if args.time_bin_wer:
             _accumulate_time_bin_wer(
                 time_bin_counts,
@@ -909,6 +1007,18 @@ def evaluate():
             )
             print("-" * 30)
 
+    evaluation_cache_used = cached_run is not None
+    evaluation_cache_path = cache_dir / f"{evaluation_cache_key}.json"
+    if not evaluation_cache_used:
+        saved_cache_path = save_cached_run(
+            cache_dir,
+            evaluation_cache_key,
+            evaluation_cache_identity,
+            cache_samples_to_save,
+        )
+        evaluation_cache_path = saved_cache_path
+        print(f"Evaluation cache saved: {saved_cache_path}")
+
     # 4. Final Aggregated Metric Calculation
     wer = jiwer.wer(references, predictions) if references else 0
     strict_wer_by_k = {
@@ -996,6 +1106,9 @@ def evaluate():
         "rtf": float(rtf),
         "total_audio_duration_sec": float(total_audio_duration_sec),
         "total_processing_time_sec": float(total_processing_time_sec),
+        "evaluation_cache_used": bool(evaluation_cache_used),
+        "evaluation_cache_key": evaluation_cache_key,
+        "evaluation_cache_path": str(evaluation_cache_path),
     }
 
     append_evaluation_row(evaluation_file, stats)
