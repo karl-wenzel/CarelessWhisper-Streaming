@@ -1464,7 +1464,7 @@ class DecodingTask:
         kept_prefix_frames = self.decoder_active_token_frames[tokens_to_move:]
         self.decoder_retired_text_tokens.extend(moved_tokens)
         self._apply_decoder_prefix_roll(
-            prompt_tokens + moved_tokens,
+            prompt_tokens,
             kept_prefix_tokens,
             kept_prefix_frames,
         )
@@ -1499,7 +1499,7 @@ class DecodingTask:
         self.decoder_prune_token_credit -= tokens_to_move
         self.decoder_retired_text_tokens.extend(moved_tokens)
         self._apply_decoder_prefix_roll(
-            prompt_tokens + moved_tokens,
+            prompt_tokens,
             kept_prefix_tokens,
             kept_prefix_frames,
         )
@@ -1512,7 +1512,8 @@ class DecodingTask:
         search space and made RTF/WER much worse. Instead, keep an approximate
         sidecar time for normal text tokens and retire tokens whose first stable
         appearance is older than the retained encoder window plus an overlap
-        margin. The overlap stays inside the 30s Whisper context budget.
+        margin. Retired text is kept in the returned transcript, not fed back as
+        prompt, matching the legacy reset path's external transcript carry.
         """
         if self._roll_decoder_prefix_after_encoder_prune_by_time():
             return
