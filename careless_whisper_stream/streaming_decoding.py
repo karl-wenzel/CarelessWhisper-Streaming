@@ -73,6 +73,7 @@ class DecodingOptions:
     disable_encoder_kv_cache: bool = False
     reset_decoder_on_encoder_slide: bool = False
     decoder_roll_overlap_seconds: float = 5.0
+    decoder_roll_min_interval_seconds: float = 2.0
     decoder_roll_diagnostics: bool = False
 
     # streaming decoding args
@@ -941,6 +942,7 @@ class DecodingTask:
         self.decoder_retired_text_tokens: list[int] = []
         self.decoder_roll_diagnostic_pending_chunks = 0
         self.decoder_roll_count = 0
+        self.decoder_last_roll_frame = -10**9
         # Requirement: cached streaming must match full-prefix encoding. The
         # conv stack's right boundary affects the final visible encoder block,
         # so cached boundary frames are recomputed once future mel exists.
@@ -1038,6 +1040,8 @@ class DecodingTask:
             raise ValueError("decoder_roll_overlap_seconds must be non-negative")
         if options.decoder_roll_overlap_seconds >= options.maximal_seconds_context:
             raise ValueError("decoder_roll_overlap_seconds must be smaller than maximal_seconds_context")
+        if options.decoder_roll_min_interval_seconds < 0:
+            raise ValueError("decoder_roll_min_interval_seconds must be non-negative")
         if options.disable_encoder_kv_cache:
             if options.use_sliding_encoder_cache:
                 raise ValueError("disable_encoder_kv_cache is incompatible with use_sliding_encoder_cache")
@@ -1421,6 +1425,35 @@ class DecodingTask:
         selected = words[-limit:] if tail else words[:limit]
         return " ".join(selected)
 
+    def _whole_word_split_index(self, tokens: list[int], max_tokens_to_move: int) -> int:
+        if max_tokens_to_move <= 0:
+            return 0
+        if max_tokens_to_move >= len(tokens):
+            return len(tokens)
+
+        # Requirement: decoder rolling should not retire BPE fragments such as
+        # "if mis". Roll only at complete decoded-word boundaries to keep both
+        # retired transcript and active prefix semantically coherent.
+        try:
+            _, word_token_groups = self.tokenizer.split_to_word_tokens(tokens)
+        except Exception:
+            return max_tokens_to_move
+
+        split_index = 0
+        consumed = 0
+        for word_tokens in word_token_groups:
+            next_consumed = consumed + len(word_tokens)
+            if next_consumed > max_tokens_to_move:
+                break
+            consumed = next_consumed
+            split_index = consumed
+
+        return split_index
+
+    def _decoder_roll_interval_elapsed(self) -> bool:
+        min_interval_frames = int(self.options.decoder_roll_min_interval_seconds / 0.02)
+        return self._current_audio_end_frame() - self.decoder_last_roll_frame >= min_interval_frames
+
     def _print_decoder_roll_event(
         self,
         mode: str,
@@ -1506,6 +1539,8 @@ class DecodingTask:
     def _roll_decoder_prefix_after_encoder_prune_by_time(self) -> bool:
         if not hasattr(self, "encoder_cache_state") or self.encoder_cache_state is None:
             return False
+        if not self._decoder_roll_interval_elapsed():
+            return False
 
         self._sync_decoder_token_timing_sidecar()
         if not self.decoder_active_tokens:
@@ -1521,7 +1556,10 @@ class DecodingTask:
                 tokens_to_move = index + 1
 
         movable_tokens = max(0, len(self.decoder_active_tokens) - min_active_prefix_tokens)
-        tokens_to_move = min(tokens_to_move, movable_tokens)
+        tokens_to_move = self._whole_word_split_index(
+            self.decoder_active_tokens,
+            min(tokens_to_move, movable_tokens),
+        )
         if tokens_to_move <= 0:
             return False
 
@@ -1542,46 +1580,8 @@ class DecodingTask:
             kept_prefix_frames,
         )
         self.decoder_prune_token_credit = 0.0
+        self.decoder_last_roll_frame = self._current_audio_end_frame()
         return True
-
-    def _roll_decoder_prefix_after_encoder_prune_by_token_credit(self):
-        self.decoder_prune_token_credit += (
-            self.last_encoder_cache_prune / max(1, self.options.gran)
-        ) * self.options.tokens_per_frame
-        tokens_to_move = int(self.decoder_prune_token_credit)
-        if tokens_to_move <= 0:
-            return
-
-        valid_tokens = self._valid_decoder_tokens()
-        generated_tokens = valid_tokens[self.sample_begin:]
-        active_prefix_tokens = self._option_tokens(self.options.prefix) + generated_tokens
-        min_active_prefix_tokens = self.options.n_tokens_look_back + 5
-        movable_tokens = max(0, len(active_prefix_tokens) - min_active_prefix_tokens)
-        tokens_to_move = min(tokens_to_move, movable_tokens)
-        if tokens_to_move <= 0:
-            return
-
-        prompt_tokens = self._option_tokens(self.options.prompt)
-        moved_tokens = active_prefix_tokens[:tokens_to_move]
-        kept_prefix_tokens = active_prefix_tokens[tokens_to_move:]
-        current_frame = self._current_audio_end_frame()
-        active_frames = self.decoder_active_token_frames
-        if len(active_frames) != len(active_prefix_tokens):
-            active_frames = [current_frame] * len(active_prefix_tokens)
-        kept_prefix_frames = active_frames[tokens_to_move:]
-        self.decoder_prune_token_credit -= tokens_to_move
-        self._print_decoder_roll_event(
-            "token-credit",
-            active_prefix_tokens,
-            moved_tokens,
-            kept_prefix_tokens,
-        )
-        self.decoder_retired_text_tokens.extend(moved_tokens)
-        self._apply_decoder_prefix_roll(
-            prompt_tokens,
-            kept_prefix_tokens,
-            kept_prefix_frames,
-        )
 
     def _roll_decoder_prefix_after_encoder_prune(self):
         """
@@ -1597,7 +1597,9 @@ class DecodingTask:
         if self._roll_decoder_prefix_after_encoder_prune_by_time():
             return
 
-        self._roll_decoder_prefix_after_encoder_prune_by_token_credit()
+        # Sidecar timing is the only rolling mode used now. The older token
+        # credit fallback caused 300ms micro-rolls and retired partial BPE
+        # fragments, which matched the observed post-roll insertion explosion.
 
     def _maybe_roll_decoder_prefix_after_encoder_prune(self):
         if not self.options.reset_decoder_on_encoder_slide:

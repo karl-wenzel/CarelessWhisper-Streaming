@@ -717,6 +717,7 @@ def evaluate():
     parser.add_argument("--disable_encoder_kv_cache", action="store_true", help="Recompute the full encoder prefix at every streaming step for cache diagnostics.")
     parser.add_argument("--reset_decoder_on_encoder_slide", action="store_true", help="Roll decoder prefix tokens into prompt as sliding encoder cache prunes old audio.")
     parser.add_argument("--decoder_roll_overlap_seconds", type=float, default=5.0, help="Seconds of retained encoder audio kept as overlap before the active decoder prefix during rolling decoder reset.")
+    parser.add_argument("--decoder_roll_min_interval_seconds", type=float, default=2.0, help="Minimum seconds between decoder prefix rolls.")
     parser.add_argument("--decoder_roll_diagnostics", action="store_true", help="Print decoder roll event and prefix/generated overlap diagnostics during transcription.")
     parser.add_argument("--time_bin_wer", action="store_true", help="Print and save interval WER grouped by elapsed-audio time bins.")
     parser.add_argument("--time_bin_seconds", type=float, default=5.0, help="Bin size in seconds for --time_bin_wer.")
@@ -742,6 +743,8 @@ def evaluate():
         raise ValueError("--decoder_roll_overlap_seconds must be non-negative.")
     if args.decoder_roll_overlap_seconds >= args.max_sec_context:
         raise ValueError("--decoder_roll_overlap_seconds must be smaller than --max_sec_context.")
+    if args.decoder_roll_min_interval_seconds < 0:
+        raise ValueError("--decoder_roll_min_interval_seconds must be non-negative.")
 
     if not args.cw:
         ckpt_path = _resolve_checkpoint_path(args.model, args.checkpoint)
@@ -918,6 +921,7 @@ def evaluate():
                 disable_encoder_kv_cache=args.disable_encoder_kv_cache,
                 reset_decoder_on_encoder_slide=args.reset_decoder_on_encoder_slide,
                 decoder_roll_overlap_seconds=args.decoder_roll_overlap_seconds,
+                decoder_roll_min_interval_seconds=args.decoder_roll_min_interval_seconds,
                 decoder_roll_diagnostics=args.decoder_roll_diagnostics,
                 max_sec_context=args.max_sec_context,
                 verbose=False
@@ -1097,6 +1101,7 @@ def evaluate():
         "disable_encoder_kv_cache": bool(args.disable_encoder_kv_cache),
         "reset_decoder_on_encoder_slide": bool(args.reset_decoder_on_encoder_slide),
         "decoder_roll_overlap_seconds": float(args.decoder_roll_overlap_seconds),
+        "decoder_roll_min_interval_seconds": float(args.decoder_roll_min_interval_seconds),
         "wer": float(wer),
         "strict_wer": float(strict_wer),
         "rwer": float(rwer),

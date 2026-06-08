@@ -79,6 +79,8 @@ def _format_row(row: dict) -> str:
         lines.append(f"DEC RESET:     {decoder_rebase}")
     if "decoder_roll_overlap_seconds" in row and row.get("decoder_roll_overlap_seconds", "") != "":
         lines.append(f"ROLL OVERLAP:  {row.get('decoder_roll_overlap_seconds', '')}s")
+    if "decoder_roll_min_interval_seconds" in row and row.get("decoder_roll_min_interval_seconds", "") != "":
+        lines.append(f"ROLL MIN INT:  {row.get('decoder_roll_min_interval_seconds', '')}s")
     lines.append(f"MODE:          {'cw' if str(row.get('is_cw_model', '')).lower() == 'true' else 'local'}")
     lines.append(f"WER:           {_fmt_percent(row.get('wer'))}")
     lines.append(f"STRICT WERs:   {_format_strict_display(row)}")
