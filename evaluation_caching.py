@@ -45,6 +45,7 @@ EVALUATION_ONLY_PARAMETER_NAMES = [
     "wir_n",
     "time_bin_wer",
     "time_bin_seconds",
+    "decoder_roll_diagnostics",
     "verbose",
 ]
 CACHE_CONTROL_PARAMETER_NAMES = ["no_evaluation_cache"]

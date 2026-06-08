@@ -717,6 +717,7 @@ def evaluate():
     parser.add_argument("--disable_encoder_kv_cache", action="store_true", help="Recompute the full encoder prefix at every streaming step for cache diagnostics.")
     parser.add_argument("--reset_decoder_on_encoder_slide", action="store_true", help="Roll decoder prefix tokens into prompt as sliding encoder cache prunes old audio.")
     parser.add_argument("--decoder_roll_overlap_seconds", type=float, default=5.0, help="Seconds of retained encoder audio kept as overlap before the active decoder prefix during rolling decoder reset.")
+    parser.add_argument("--decoder_roll_diagnostics", action="store_true", help="Print decoder roll event and prefix/generated overlap diagnostics during transcription.")
     parser.add_argument("--time_bin_wer", action="store_true", help="Print and save interval WER grouped by elapsed-audio time bins.")
     parser.add_argument("--time_bin_seconds", type=float, default=5.0, help="Bin size in seconds for --time_bin_wer.")
     parser.add_argument("-verbose", action="store_true", help="Prints additional info while evaluating")
@@ -824,6 +825,8 @@ def evaluate():
     cached_run = None
     if args.no_evaluation_cache:
         print("Evaluation cache bypassed by --no_evaluation_cache; transcribe outputs will be recalculated.")
+    elif args.decoder_roll_diagnostics:
+        print("Evaluation cache bypassed by --decoder_roll_diagnostics; transcribe outputs will be recalculated for diagnostic logging.")
     else:
         cached_run = load_cached_run(
             cache_dir,
@@ -915,6 +918,7 @@ def evaluate():
                 disable_encoder_kv_cache=args.disable_encoder_kv_cache,
                 reset_decoder_on_encoder_slide=args.reset_decoder_on_encoder_slide,
                 decoder_roll_overlap_seconds=args.decoder_roll_overlap_seconds,
+                decoder_roll_diagnostics=args.decoder_roll_diagnostics,
                 max_sec_context=args.max_sec_context,
                 verbose=False
             )

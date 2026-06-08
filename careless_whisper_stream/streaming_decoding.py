@@ -73,6 +73,7 @@ class DecodingOptions:
     disable_encoder_kv_cache: bool = False
     reset_decoder_on_encoder_slide: bool = False
     decoder_roll_overlap_seconds: float = 5.0
+    decoder_roll_diagnostics: bool = False
 
     # streaming decoding args
     stream_decode: bool = True
@@ -938,6 +939,8 @@ class DecodingTask:
         self.decoder_active_tokens: list[int] = []
         self.decoder_active_token_frames: list[int] = []
         self.decoder_retired_text_tokens: list[int] = []
+        self.decoder_roll_diagnostic_pending_chunks = 0
+        self.decoder_roll_count = 0
         # Requirement: cached streaming must match full-prefix encoding. The
         # conv stack's right boundary affects the final visible encoder block,
         # so cached boundary frames are recomputed once future mel exists.
@@ -1401,6 +1404,52 @@ class DecodingTask:
                 return row[:index]
         return row
 
+    def _token_words(self, tokens: list[int]) -> list[str]:
+        return self.tokenizer.decode(tokens).strip().split()
+
+    def _suffix_prefix_word_overlap(self, left_tokens: list[int], right_tokens: list[int]) -> int:
+        left_words = self._token_words(left_tokens)
+        right_words = self._token_words(right_tokens)
+        max_overlap = min(len(left_words), len(right_words))
+        for overlap in range(max_overlap, 0, -1):
+            if left_words[-overlap:] == right_words[:overlap]:
+                return overlap
+        return 0
+
+    def _format_words(self, tokens: list[int], *, tail: bool, limit: int = 18) -> str:
+        words = self._token_words(tokens)
+        selected = words[-limit:] if tail else words[:limit]
+        return " ".join(selected)
+
+    def _print_decoder_roll_event(
+        self,
+        mode: str,
+        active_tokens: list[int],
+        moved_tokens: list[int],
+        kept_prefix_tokens: list[int],
+    ):
+        if not self.options.decoder_roll_diagnostics:
+            return
+
+        self.decoder_roll_count += 1
+        cache_start_frame = getattr(self.encoder_cache_state, "cache_start_frame", 0)
+        audio_end_frame = self._current_audio_end_frame()
+        print(
+            "[decoder-roll] "
+            f"#{self.decoder_roll_count} mode={mode} "
+            f"audio_end={audio_end_frame * 0.02:.2f}s "
+            f"cache_start={cache_start_frame * 0.02:.2f}s "
+            f"pruned={self.last_encoder_cache_prune}f "
+            f"overlap={self.options.decoder_roll_overlap_seconds:.2f}s "
+            f"active_tokens={len(active_tokens)} "
+            f"move_tokens={len(moved_tokens)} "
+            f"keep_tokens={len(kept_prefix_tokens)} "
+            f"retired_tokens={len(self.decoder_retired_text_tokens) + len(moved_tokens)}"
+        )
+        print(f"[decoder-roll] moved_tail: {self._format_words(moved_tokens, tail=True)}")
+        print(f"[decoder-roll] kept_head: {self._format_words(kept_prefix_tokens, tail=False)}")
+        self.decoder_roll_diagnostic_pending_chunks = 3
+
     def _current_audio_end_frame(self) -> int:
         if hasattr(self, "encoder_cache_state") and self.encoder_cache_state is not None:
             return int(self.encoder_cache_state.next_frame)
@@ -1480,6 +1529,12 @@ class DecodingTask:
         moved_tokens = self.decoder_active_tokens[:tokens_to_move]
         kept_prefix_tokens = self.decoder_active_tokens[tokens_to_move:]
         kept_prefix_frames = self.decoder_active_token_frames[tokens_to_move:]
+        self._print_decoder_roll_event(
+            "sidecar",
+            self.decoder_active_tokens,
+            moved_tokens,
+            kept_prefix_tokens,
+        )
         self.decoder_retired_text_tokens.extend(moved_tokens)
         self._apply_decoder_prefix_roll(
             prompt_tokens,
@@ -1515,6 +1570,12 @@ class DecodingTask:
             active_frames = [current_frame] * len(active_prefix_tokens)
         kept_prefix_frames = active_frames[tokens_to_move:]
         self.decoder_prune_token_credit -= tokens_to_move
+        self._print_decoder_roll_event(
+            "token-credit",
+            active_prefix_tokens,
+            moved_tokens,
+            kept_prefix_tokens,
+        )
         self.decoder_retired_text_tokens.extend(moved_tokens)
         self._apply_decoder_prefix_roll(
             prompt_tokens,
@@ -1672,12 +1733,34 @@ class DecodingTask:
             # user-visible transcript reset. Keep the returned text as the full
             # transcript by prepending retired/prefix context to the selected
             # post-prefix continuation.
+            prefix_tokens = self._option_tokens(self.options.prefix)
             output_tokens = (
                 self.decoder_retired_text_tokens
-                + self._option_tokens(self.options.prefix)
+                + prefix_tokens
                 + tokens[0]
             )
             texts: List[str] = [tokenizer.decode(output_tokens).strip()]
+            if (
+                self.options.decoder_roll_diagnostics
+                and self.decoder_roll_diagnostic_pending_chunks > 0
+            ):
+                overlap_words = self._suffix_prefix_word_overlap(prefix_tokens, tokens[0])
+                retired_words = len(self._token_words(self.decoder_retired_text_tokens))
+                prefix_words = len(self._token_words(prefix_tokens))
+                generated_words = len(self._token_words(tokens[0]))
+                total_words = len(texts[0].split())
+                print(
+                    "[decoder-roll][assembly] "
+                    f"pending={self.decoder_roll_diagnostic_pending_chunks} "
+                    f"retired_words={retired_words} "
+                    f"prefix_words={prefix_words} "
+                    f"generated_words={generated_words} "
+                    f"total_words={total_words} "
+                    f"prefix_generated_overlap_words={overlap_words}"
+                )
+                print(f"[decoder-roll][assembly] prefix_tail: {self._format_words(prefix_tokens, tail=True)}")
+                print(f"[decoder-roll][assembly] generated_head: {self._format_words(tokens[0], tail=False)}")
+                self.decoder_roll_diagnostic_pending_chunks -= 1
         else:
             texts: List[str] = [tokenizer.decode(t).strip() for t in tokens]
         sum_logprobs: List[float] = [lp[i] for i, lp in zip(selected, sum_logprobs)]
