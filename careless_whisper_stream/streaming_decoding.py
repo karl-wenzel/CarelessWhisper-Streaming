@@ -591,6 +591,7 @@ class BeamStreamingDecoder(TokenDecoder):
                  n_beams: int = 1,
                  pad_token: int = None,
                  wait_for_all: bool = False,
+                 sample_begin: int = 4,
                 ):
         self.tokens_per_frame = tokens_per_frame
         self.eot = eot
@@ -599,7 +600,8 @@ class BeamStreamingDecoder(TokenDecoder):
         self.last_logits: list = []
         self.temperature = temperature
         self.tokens_look_back = n_tokens_look_back
-        self.check_token_index = [4 + 1 for _ in range(n_beams)] # Here I'll save the last index that is relevant for checking.
+        self.sample_begin = sample_begin
+        self.check_token_index = [sample_begin + 1 for _ in range(n_beams)] # Here I'll save the last index that is relevant for checking.
         self.n_beams = n_beams
         self.sum_logprobs = torch.zeros(n_beams)
         self.timestamps_map = {}
@@ -617,7 +619,7 @@ class BeamStreamingDecoder(TokenDecoder):
     def _get_last_valid_token_index(self, prefix: Tensor):
         indices = torch.where((prefix == self.eot) | (prefix == self.pad_token))[0]
         last_valid_token_index = (prefix.shape[-1] - 1) if indices.shape == torch.Size([0]) else (indices.min().item() - 1)
-        last_valid_token_index = max(last_valid_token_index, 3)
+        last_valid_token_index = max(last_valid_token_index, self.sample_begin - 1)
         
         return last_valid_token_index
 
@@ -632,7 +634,8 @@ class BeamStreamingDecoder(TokenDecoder):
         if not check_tokens: 
             return last_valid_token_index, True
 
-        examined_prob_indices = range(max(last_valid_token_index - self.tokens_look_back, 3), last_valid_token_index)
+        first_generated_prob_index = self.sample_begin - 1
+        examined_prob_indices = range(max(last_valid_token_index - self.tokens_look_back, first_generated_prob_index), last_valid_token_index)
         for examined_prob_index in examined_prob_indices:
             
             examined_token_index = examined_prob_index + 1
@@ -662,7 +665,8 @@ class BeamStreamingDecoder(TokenDecoder):
         if not check_tokens: 
             return last_valid_token_index, True
         
-        examined_prob_indices = range(max(last_valid_token_index - self.tokens_look_back, 3), last_valid_token_index)
+        first_generated_prob_index = self.sample_begin - 1
+        examined_prob_indices = range(max(last_valid_token_index - self.tokens_look_back, first_generated_prob_index), last_valid_token_index)
         for examined_prob_index in examined_prob_indices:
             examined_token_index = examined_prob_index + 1
             examined_token = prefix[examined_token_index]
@@ -704,7 +708,21 @@ class BeamStreamingDecoder(TokenDecoder):
 
             # Calculate candidates from the last token index we should check.
             for logprob, token in zip(*logprobs[beam, sampling_index].topk(self.n_beams + 1)):
-                new_logprob = (logprobs[beam, range(3, sampling_index - 1), tokens[beam, 4:sampling_index]].sum() + logprob).item()
+                first_generated_prob_index = self.sample_begin - 1
+                if sampling_index > first_generated_prob_index:
+                    score_positions = torch.arange(
+                        first_generated_prob_index,
+                        sampling_index,
+                        device=tokens.device,
+                    )
+                    score_tokens = tokens[
+                        beam,
+                        first_generated_prob_index + 1 : sampling_index + 1,
+                    ]
+                    prefix_logprob = logprobs[beam, score_positions, score_tokens].sum()
+                else:
+                    prefix_logprob = logprob.new_tensor(0.0)
+                new_logprob = (prefix_logprob + logprob).item()
                 
                 token_index = sampling_index + 1
                 if token_index == len(prefix):
@@ -766,7 +784,7 @@ class BeamStreamingDecoder(TokenDecoder):
         return tokens, completed
 
     def reset(self):
-        self.check_token_index = -self.tokens_look_back
+        self.check_token_index = self.sample_begin - self.tokens_look_back
 
     def finalize(self, preceding_tokens: Tensor, sum_logprobs: Tensor):
         if not self.wait_for_all:
@@ -881,7 +899,7 @@ class DecodingTask:
         elif options.stream_decode and options.beam_size > 0:
             #print(f"Initialized BeamStreamingDecoder with beam size {options.beam_size} and temperature {options.temperature}")
             self.decoder = BeamStreamingDecoder(
-                options.temperature, options.tokens_per_frame, tokenizer.eot, self.inference, options.n_tokens_look_back, options.beam_size, tokenizer.sot_lm, options.wait_for_all
+                options.temperature, options.tokens_per_frame, tokenizer.eot, self.inference, options.n_tokens_look_back, options.beam_size, tokenizer.sot_lm, options.wait_for_all, self.sample_begin
                 # options.temperature, options.tokens_per_frame, tokenizer.eot, self.inference, options.n_tokens_look_back, options.beam_size, tokenizer.eot, options.wait_for_all
             )
         elif options.beam_size is not None and options.beam_size > 0:
@@ -890,7 +908,7 @@ class DecodingTask:
 
             if self.options.localagreement:
                 self.decoder = BeamStreamingDecoder(
-                    options.temperature, options.tokens_per_frame, tokenizer.eot, self.inference, options.n_tokens_look_back, options.beam_size, tokenizer.sot_lm, options.wait_for_all
+                    options.temperature, options.tokens_per_frame, tokenizer.eot, self.inference, options.n_tokens_look_back, options.beam_size, tokenizer.sot_lm, options.wait_for_all, self.sample_begin
                 )
                 self.decoder._mark_check_tokens(False)
         else:

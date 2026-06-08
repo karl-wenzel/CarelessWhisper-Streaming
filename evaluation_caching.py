@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from typing import Any
 
 
-EVALUATION_CACHE_VERSION = 5
+EVALUATION_CACHE_VERSION = 6
 MAX_EVALUATION_CACHE_RUNS = 5
 DEFAULT_EVALUATION_FILE = Path(os.environ.get("HOME", str(Path.home()))) / "ma" / "data" / "evaluation.csv"
 
