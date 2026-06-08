@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from typing import Any
 
 
-EVALUATION_CACHE_VERSION = 7
+EVALUATION_CACHE_VERSION = 8
 MAX_EVALUATION_CACHE_RUNS = 5
 DEFAULT_EVALUATION_FILE = Path(os.environ.get("HOME", str(Path.home()))) / "ma" / "data" / "evaluation.csv"
 
@@ -38,6 +38,8 @@ PRE_EVALUATION_PARAMETER_NAMES = [
     "reset_decoder_on_encoder_slide",
     "decoder_roll_overlap_seconds",
     "decoder_roll_min_interval_seconds",
+    "decoder_roll_max_prefix_tokens",
+    "decoder_token_time_lag_seconds",
     "cw",
     "dataset_name",
 ]

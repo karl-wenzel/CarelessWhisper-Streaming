@@ -74,6 +74,8 @@ class DecodingOptions:
     reset_decoder_on_encoder_slide: bool = False
     decoder_roll_overlap_seconds: float = 5.0
     decoder_roll_min_interval_seconds: float = 2.0
+    decoder_roll_max_prefix_tokens: int = 48
+    decoder_token_time_lag_seconds: float = 2.0
     decoder_roll_diagnostics: bool = False
 
     # streaming decoding args
@@ -1042,6 +1044,10 @@ class DecodingTask:
             raise ValueError("decoder_roll_overlap_seconds must be smaller than maximal_seconds_context")
         if options.decoder_roll_min_interval_seconds < 0:
             raise ValueError("decoder_roll_min_interval_seconds must be non-negative")
+        if options.decoder_roll_max_prefix_tokens <= 0:
+            raise ValueError("decoder_roll_max_prefix_tokens must be positive")
+        if options.decoder_token_time_lag_seconds < 0:
+            raise ValueError("decoder_token_time_lag_seconds must be non-negative")
         if options.disable_encoder_kv_cache:
             if options.use_sliding_encoder_cache:
                 raise ValueError("disable_encoder_kv_cache is incompatible with use_sliding_encoder_cache")
@@ -1474,6 +1480,8 @@ class DecodingTask:
             f"cache_start={cache_start_frame * 0.02:.2f}s "
             f"pruned={self.last_encoder_cache_prune}f "
             f"overlap={self.options.decoder_roll_overlap_seconds:.2f}s "
+            f"lag={self.options.decoder_token_time_lag_seconds:.2f}s "
+            f"max_prefix={self.options.decoder_roll_max_prefix_tokens} "
             f"active_tokens={len(active_tokens)} "
             f"move_tokens={len(moved_tokens)} "
             f"keep_tokens={len(kept_prefix_tokens)} "
@@ -1495,7 +1503,8 @@ class DecodingTask:
 
     def _sync_decoder_token_timing_sidecar(self):
         active_tokens = self._active_decoder_prefix_tokens()
-        current_frame = self._current_audio_end_frame()
+        lag_frames = int(self.options.decoder_token_time_lag_seconds / 0.02)
+        current_frame = max(0, self._current_audio_end_frame() - lag_frames)
 
         common_prefix_len = 0
         max_common = min(
@@ -1556,6 +1565,16 @@ class DecodingTask:
                 tokens_to_move = index + 1
 
         movable_tokens = max(0, len(self.decoder_active_tokens) - min_active_prefix_tokens)
+        max_prefix_tokens = max(
+            min_active_prefix_tokens,
+            self.options.decoder_roll_max_prefix_tokens,
+        )
+        # Requirement: after rolling, Whisper should see only a short recent
+        # continuity prefix. The transcript still keeps retired text externally.
+        tokens_to_move = max(
+            tokens_to_move,
+            max(0, len(self.decoder_active_tokens) - max_prefix_tokens),
+        )
         tokens_to_move = self._whole_word_split_index(
             self.decoder_active_tokens,
             min(tokens_to_move, movable_tokens),

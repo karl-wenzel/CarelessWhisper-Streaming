@@ -54,6 +54,8 @@ def transcribe(
     reset_decoder_on_encoder_slide: bool = False,
     decoder_roll_overlap_seconds: float = 5.0,
     decoder_roll_min_interval_seconds: float = 2.0,
+    decoder_roll_max_prefix_tokens: int = 48,
+    decoder_token_time_lag_seconds: float = 2.0,
     decoder_roll_diagnostics: bool = False,
     streaming_timestamps: bool = False,
     force_first_tokens_timestamps: bool = False,
@@ -119,6 +121,8 @@ def transcribe(
         reset_decoder_on_encoder_slide=reset_decoder_on_encoder_slide,
         decoder_roll_overlap_seconds=decoder_roll_overlap_seconds,
         decoder_roll_min_interval_seconds=decoder_roll_min_interval_seconds,
+        decoder_roll_max_prefix_tokens=decoder_roll_max_prefix_tokens,
+        decoder_token_time_lag_seconds=decoder_token_time_lag_seconds,
         decoder_roll_diagnostics=decoder_roll_diagnostics,
         streaming_timestamps=streaming_timestamps,
         force_first_tokens_timestamps=force_first_tokens_timestamps,
@@ -237,6 +241,8 @@ def cli():
     parser.add_argument("--reset_decoder_on_encoder_slide", action="store_true", help="Roll decoder prefix tokens into prompt as sliding encoder cache prunes old audio")
     parser.add_argument("--decoder_roll_overlap_seconds", type=float, default=5.0, help="Seconds of retained encoder audio kept before the active decoder prefix")
     parser.add_argument("--decoder_roll_min_interval_seconds", type=float, default=2.0, help="Minimum seconds between decoder prefix rolls")
+    parser.add_argument("--decoder_roll_max_prefix_tokens", type=int, default=48, help="Maximum BPE tokens kept as active decoder prefix after a roll")
+    parser.add_argument("--decoder_token_time_lag_seconds", type=float, default=2.0, help="Seconds subtracted from first-seen token time estimates for decoder rolling")
     parser.add_argument("--decoder_roll_diagnostics", action="store_true", help="Print decoder roll event and prefix/generated overlap diagnostics")
 
     args = parser.parse_args().__dict__

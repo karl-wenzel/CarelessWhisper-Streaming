@@ -81,6 +81,10 @@ def _format_row(row: dict) -> str:
         lines.append(f"ROLL OVERLAP:  {row.get('decoder_roll_overlap_seconds', '')}s")
     if "decoder_roll_min_interval_seconds" in row and row.get("decoder_roll_min_interval_seconds", "") != "":
         lines.append(f"ROLL MIN INT:  {row.get('decoder_roll_min_interval_seconds', '')}s")
+    if "decoder_roll_max_prefix_tokens" in row and row.get("decoder_roll_max_prefix_tokens", "") != "":
+        lines.append(f"ROLL MAX PREF: {row.get('decoder_roll_max_prefix_tokens', '')} tokens")
+    if "decoder_token_time_lag_seconds" in row and row.get("decoder_token_time_lag_seconds", "") != "":
+        lines.append(f"ROLL LAG:      {row.get('decoder_token_time_lag_seconds', '')}s")
     lines.append(f"MODE:          {'cw' if str(row.get('is_cw_model', '')).lower() == 'true' else 'local'}")
     lines.append(f"WER:           {_fmt_percent(row.get('wer'))}")
     lines.append(f"STRICT WERs:   {_format_strict_display(row)}")

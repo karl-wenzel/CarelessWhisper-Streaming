@@ -622,10 +622,20 @@ def _new_hypothesis_text_for_interval(
     start_words = _hypothesis_at_or_before(results, start_sec, chunk_duration_sec, normalizer).split()
     end_words = _hypothesis_at_or_before(results, end_sec, chunk_duration_sec, normalizer).split()
 
-    # Time-bin WER is meant to isolate intervals. Since streaming hypotheses are
-    # cumulative, remove the words that were already emitted at bin start so
-    # 0-5s content is not scored again in the 5-10s bin.
-    return " ".join(end_words[len(start_words):])
+    # Time-bin WER is meant to isolate intervals. Rolling decoder state can
+    # revise earlier cumulative text, so start_words is not always a literal
+    # prefix of end_words. Align both hypotheses and remove everything through
+    # the last matched old segment before scoring the interval suffix.
+    if not start_words:
+        return " ".join(end_words)
+
+    matcher = difflib.SequenceMatcher(a=start_words, b=end_words, autojunk=False)
+    matched_blocks = [block for block in matcher.get_matching_blocks() if block.size > 0]
+    if not matched_blocks:
+        return " ".join(end_words[len(start_words):])
+
+    old_boundary = max(block.b + block.size for block in matched_blocks)
+    return " ".join(end_words[old_boundary:])
 
 
 def _reference_text_for_interval(gt_words, start_sec: float, end_sec: float, normalizer) -> str:
@@ -718,6 +728,8 @@ def evaluate():
     parser.add_argument("--reset_decoder_on_encoder_slide", action="store_true", help="Roll decoder prefix tokens into prompt as sliding encoder cache prunes old audio.")
     parser.add_argument("--decoder_roll_overlap_seconds", type=float, default=5.0, help="Seconds of retained encoder audio kept as overlap before the active decoder prefix during rolling decoder reset.")
     parser.add_argument("--decoder_roll_min_interval_seconds", type=float, default=2.0, help="Minimum seconds between decoder prefix rolls.")
+    parser.add_argument("--decoder_roll_max_prefix_tokens", type=int, default=48, help="Maximum BPE tokens kept as active decoder prefix after a roll.")
+    parser.add_argument("--decoder_token_time_lag_seconds", type=float, default=2.0, help="Seconds subtracted from first-seen token time estimates for decoder rolling.")
     parser.add_argument("--decoder_roll_diagnostics", action="store_true", help="Print decoder roll event and prefix/generated overlap diagnostics during transcription.")
     parser.add_argument("--time_bin_wer", action="store_true", help="Print and save interval WER grouped by elapsed-audio time bins.")
     parser.add_argument("--time_bin_seconds", type=float, default=5.0, help="Bin size in seconds for --time_bin_wer.")
@@ -745,6 +757,10 @@ def evaluate():
         raise ValueError("--decoder_roll_overlap_seconds must be smaller than --max_sec_context.")
     if args.decoder_roll_min_interval_seconds < 0:
         raise ValueError("--decoder_roll_min_interval_seconds must be non-negative.")
+    if args.decoder_roll_max_prefix_tokens <= 0:
+        raise ValueError("--decoder_roll_max_prefix_tokens must be positive.")
+    if args.decoder_token_time_lag_seconds < 0:
+        raise ValueError("--decoder_token_time_lag_seconds must be non-negative.")
 
     if not args.cw:
         ckpt_path = _resolve_checkpoint_path(args.model, args.checkpoint)
@@ -922,6 +938,8 @@ def evaluate():
                 reset_decoder_on_encoder_slide=args.reset_decoder_on_encoder_slide,
                 decoder_roll_overlap_seconds=args.decoder_roll_overlap_seconds,
                 decoder_roll_min_interval_seconds=args.decoder_roll_min_interval_seconds,
+                decoder_roll_max_prefix_tokens=args.decoder_roll_max_prefix_tokens,
+                decoder_token_time_lag_seconds=args.decoder_token_time_lag_seconds,
                 decoder_roll_diagnostics=args.decoder_roll_diagnostics,
                 max_sec_context=args.max_sec_context,
                 verbose=False
@@ -1102,6 +1120,8 @@ def evaluate():
         "reset_decoder_on_encoder_slide": bool(args.reset_decoder_on_encoder_slide),
         "decoder_roll_overlap_seconds": float(args.decoder_roll_overlap_seconds),
         "decoder_roll_min_interval_seconds": float(args.decoder_roll_min_interval_seconds),
+        "decoder_roll_max_prefix_tokens": int(args.decoder_roll_max_prefix_tokens),
+        "decoder_token_time_lag_seconds": float(args.decoder_token_time_lag_seconds),
         "wer": float(wer),
         "strict_wer": float(strict_wer),
         "rwer": float(rwer),
