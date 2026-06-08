@@ -72,6 +72,7 @@ class DecodingOptions:
     use_sliding_encoder_cache: bool = False
     disable_encoder_kv_cache: bool = False
     reset_decoder_on_encoder_slide: bool = False
+    decoder_roll_overlap_seconds: float = 5.0
 
     # streaming decoding args
     stream_decode: bool = True
@@ -916,6 +917,9 @@ class DecodingTask:
         self.last_encoder_cache_overlap = 0
         self.decoder_force_first_frame = False
         self.decoder_prune_token_credit = 0.0
+        self.decoder_active_tokens: list[int] = []
+        self.decoder_active_token_frames: list[int] = []
+        self.decoder_retired_text_tokens: list[int] = []
         # Requirement: cached streaming must match full-prefix encoding. The
         # conv stack's right boundary affects the final visible encoder block,
         # so cached boundary frames are recomputed once future mel exists.
@@ -1009,6 +1013,10 @@ class DecodingTask:
                 raise ValueError("use_sliding_encoder_cache requires single_frame_mel=True")
         if options.reset_decoder_on_encoder_slide and not options.use_sliding_encoder_cache:
             raise ValueError("reset_decoder_on_encoder_slide requires use_sliding_encoder_cache")
+        if options.decoder_roll_overlap_seconds < 0:
+            raise ValueError("decoder_roll_overlap_seconds must be non-negative")
+        if options.decoder_roll_overlap_seconds >= options.maximal_seconds_context:
+            raise ValueError("decoder_roll_overlap_seconds must be smaller than maximal_seconds_context")
         if options.disable_encoder_kv_cache:
             if options.use_sliding_encoder_cache:
                 raise ValueError("disable_encoder_kv_cache is incompatible with use_sliding_encoder_cache")
@@ -1049,6 +1057,12 @@ class DecodingTask:
         self.initial_tokens = self._get_initial_tokens()
         self.sample_begin = len(self.initial_tokens)
         self.sot_index = self.initial_tokens.index(self.tokenizer.sot)
+        if hasattr(self, "logit_filters"):
+            for logit_filter in self.logit_filters:
+                if hasattr(logit_filter, "sample_begin"):
+                    logit_filter.sample_begin = self.sample_begin
+        if hasattr(self, "decoder") and hasattr(self.decoder, "sample_begin"):
+            self.decoder.sample_begin = self.sample_begin
         if hasattr(self, "inference") and self.inference is not None:
             self.inference.initial_token_length = len(self.initial_tokens)
 
@@ -1341,6 +1355,10 @@ class DecodingTask:
 
     def _reset_tokens_to_recent_prefix(self):
         self.options.prefix = self.tokens[:, len(self.sot_sequence):].tolist()[0][-self.options.n_tokens_look_back-5:]
+        self.decoder_active_tokens = self._option_tokens(self.options.prefix)
+        current_frame = self._current_audio_end_frame()
+        self.decoder_active_token_frames = [current_frame] * len(self.decoder_active_tokens)
+        self.decoder_retired_text_tokens = []
 
         # save retired tokens
         self.retired_tokens = self.tokens[:, :len(self.sot_sequence)]
@@ -1365,15 +1383,95 @@ class DecodingTask:
                 return row[:index]
         return row
 
-    def _roll_decoder_prefix_after_encoder_prune(self):
-        """
-        Approximate rolling decoder context for sliding encoder eviction.
+    def _current_audio_end_frame(self) -> int:
+        if hasattr(self, "encoder_cache_state") and self.encoder_cache_state is not None:
+            return int(self.encoder_cache_state.next_frame)
+        return int(self.index)
 
-        When the encoder drops old audio frames, move the oldest active decoder
-        prefix tokens into prompt and keep the rest as forced prefix. This keeps
-        the decoder's active prefix roughly aligned with the encoder window
-        without asking a fresh decoder to re-transcribe the whole cache.
-        """
+    def _active_decoder_prefix_tokens(self) -> list[int]:
+        valid_tokens = self._valid_decoder_tokens()
+        generated_tokens = valid_tokens[self.sample_begin:]
+        return self._option_tokens(self.options.prefix) + generated_tokens
+
+    def _sync_decoder_token_timing_sidecar(self):
+        active_tokens = self._active_decoder_prefix_tokens()
+        current_frame = self._current_audio_end_frame()
+
+        common_prefix_len = 0
+        max_common = min(
+            len(active_tokens),
+            len(self.decoder_active_tokens),
+            len(self.decoder_active_token_frames),
+        )
+        while (
+            common_prefix_len < max_common
+            and active_tokens[common_prefix_len] == self.decoder_active_tokens[common_prefix_len]
+        ):
+            common_prefix_len += 1
+
+        self.decoder_active_token_frames = (
+            self.decoder_active_token_frames[:common_prefix_len]
+            + [current_frame] * (len(active_tokens) - common_prefix_len)
+        )
+        self.decoder_active_tokens = active_tokens
+
+    def _apply_decoder_prefix_roll(
+        self,
+        prompt_tokens: list[int],
+        kept_prefix_tokens: list[int],
+        kept_prefix_frames: list[int],
+    ):
+        max_prompt_tokens = max(0, self.n_ctx // 2 - 1)
+        self.options.prompt = prompt_tokens[-max_prompt_tokens:]
+        self.options.prefix = kept_prefix_tokens
+        self.decoder_active_tokens = kept_prefix_tokens
+        self.decoder_active_token_frames = kept_prefix_frames
+
+        self._refresh_initial_token_state()
+        self.tokens = torch.tensor([list(self.initial_tokens)])
+        self.tokens = self.tokens.repeat_interleave(self.n_group, dim=0).to(self.model.device)
+        self._decoder_caching_inner_reset()
+        self.sum_logprobs = torch.zeros(self.n_group, device=self.model.device)
+        self.no_speech_probs = [np.nan] * self.n_group
+        self._reset_decoder_selection_state()
+        self.decoder_force_first_frame = True
+
+    def _roll_decoder_prefix_after_encoder_prune_by_time(self) -> bool:
+        if not hasattr(self, "encoder_cache_state") or self.encoder_cache_state is None:
+            return False
+
+        self._sync_decoder_token_timing_sidecar()
+        if not self.decoder_active_tokens:
+            return False
+
+        overlap_frames = int(self.options.decoder_roll_overlap_seconds / 0.02)
+        cutoff_frame = self.encoder_cache_state.cache_start_frame + overlap_frames
+        min_active_prefix_tokens = self.options.n_tokens_look_back + 5
+
+        tokens_to_move = 0
+        for index, token_frame in enumerate(self.decoder_active_token_frames):
+            if token_frame <= cutoff_frame:
+                tokens_to_move = index + 1
+
+        movable_tokens = max(0, len(self.decoder_active_tokens) - min_active_prefix_tokens)
+        tokens_to_move = min(tokens_to_move, movable_tokens)
+        if tokens_to_move <= 0:
+            return False
+
+        prompt_tokens = self._option_tokens(self.options.prompt)
+        moved_tokens = self.decoder_active_tokens[:tokens_to_move]
+        kept_prefix_tokens = self.decoder_active_tokens[tokens_to_move:]
+        kept_prefix_frames = self.decoder_active_token_frames[tokens_to_move:]
+        self.decoder_retired_text_tokens.extend(moved_tokens)
+        self._apply_decoder_prefix_roll(
+            prompt_tokens + moved_tokens,
+            kept_prefix_tokens,
+            kept_prefix_frames,
+        )
+        self.decoder_prune_token_credit = 0.0
+        return True
+
+    def _roll_decoder_prefix_after_encoder_prune_by_token_credit(self):
         self.decoder_prune_token_credit += (
             self.last_encoder_cache_prune / max(1, self.options.gran)
         ) * self.options.tokens_per_frame
@@ -1393,19 +1491,33 @@ class DecodingTask:
         prompt_tokens = self._option_tokens(self.options.prompt)
         moved_tokens = active_prefix_tokens[:tokens_to_move]
         kept_prefix_tokens = active_prefix_tokens[tokens_to_move:]
-        max_prompt_tokens = max(0, self.n_ctx // 2 - 1)
-        self.options.prompt = (prompt_tokens + moved_tokens)[-max_prompt_tokens:]
-        self.options.prefix = kept_prefix_tokens
+        current_frame = self._current_audio_end_frame()
+        active_frames = self.decoder_active_token_frames
+        if len(active_frames) != len(active_prefix_tokens):
+            active_frames = [current_frame] * len(active_prefix_tokens)
+        kept_prefix_frames = active_frames[tokens_to_move:]
         self.decoder_prune_token_credit -= tokens_to_move
+        self.decoder_retired_text_tokens.extend(moved_tokens)
+        self._apply_decoder_prefix_roll(
+            prompt_tokens + moved_tokens,
+            kept_prefix_tokens,
+            kept_prefix_frames,
+        )
 
-        self._refresh_initial_token_state()
-        self.tokens = torch.tensor([list(self.initial_tokens)])
-        self.tokens = self.tokens.repeat_interleave(self.n_group, dim=0).to(self.model.device)
-        self._decoder_caching_inner_reset()
-        self.sum_logprobs = torch.zeros(self.n_group, device=self.model.device)
-        self.no_speech_probs = [np.nan] * self.n_group
-        self._reset_decoder_selection_state()
-        self.decoder_force_first_frame = True
+    def _roll_decoder_prefix_after_encoder_prune(self):
+        """
+        Roll decoder text when the sliding encoder evicts old audio.
+
+        Requirement: avoid timestamp-token decoding because it changes Whisper's
+        search space and made RTF/WER much worse. Instead, keep an approximate
+        sidecar time for normal text tokens and retire tokens whose first stable
+        appearance is older than the retained encoder window plus an overlap
+        margin. The overlap stays inside the 30s Whisper context budget.
+        """
+        if self._roll_decoder_prefix_after_encoder_prune_by_time():
+            return
+
+        self._roll_decoder_prefix_after_encoder_prune_by_token_credit()
 
     def _maybe_roll_decoder_prefix_after_encoder_prune(self):
         if not self.options.reset_decoder_on_encoder_slide:
@@ -1498,6 +1610,7 @@ class DecodingTask:
             audio_features = self.audio_features
             decoder_audio_features = audio_features if self.options.use_sliding_encoder_cache else audio_features[:, :self.index]
             sum_logprobs, no_speech_probs = self._main_loop(decoder_audio_features)
+            self._sync_decoder_token_timing_sidecar()
         else:
             audio_features = self._get_audio_features(self.mel)
             if self.last_encoder_cache_overlap > 0:
@@ -1507,6 +1620,7 @@ class DecodingTask:
                 )
             self._maybe_roll_decoder_prefix_after_encoder_prune()
             sum_logprobs, no_speech_probs = self._main_loop(audio_features)
+            self._sync_decoder_token_timing_sidecar()
             if self.options.use_sliding_encoder_cache:
                 self.model.prune_cross_attn_kv_cache(self.ca_kv_cache, self.last_encoder_cache_prune)
 
@@ -1534,7 +1648,19 @@ class DecodingTask:
         selected = self.sequence_ranker.rank(tokens, sum_logprobs)
         tokens: List[List[int]] = [t[i].tolist() for i, t in zip(selected, tokens)]
         
-        texts: List[str] = [tokenizer.decode(t).strip() for t in tokens]
+        if self.options.reset_decoder_on_encoder_slide:
+            # Requirement: prefix rolling is internal streaming state, not a
+            # user-visible transcript reset. Keep the returned text as the full
+            # transcript by prepending retired/prefix context to the selected
+            # post-prefix continuation.
+            output_tokens = (
+                self.decoder_retired_text_tokens
+                + self._option_tokens(self.options.prefix)
+                + tokens[0]
+            )
+            texts: List[str] = [tokenizer.decode(output_tokens).strip()]
+        else:
+            texts: List[str] = [tokenizer.decode(t).strip() for t in tokens]
         sum_logprobs: List[float] = [lp[i] for i, lp in zip(selected, sum_logprobs)]
         avg_logprobs: List[float] = [
             lp / (len(t) + 1) for t, lp in zip(tokens, sum_logprobs)
@@ -1559,6 +1685,7 @@ class DecodingTask:
                 audio_features=audio_features,
                 language="en",
                 tokens=tokens,
+                retired_tokens=list(self.decoder_retired_text_tokens),
                 text=texts[0],
                 avg_logprob=avg_logprobs,
                 no_speech_prob=no_speech_probs,

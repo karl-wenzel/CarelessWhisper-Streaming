@@ -77,6 +77,8 @@ def _format_row(row: dict) -> str:
     if "reset_decoder_on_encoder_slide" in row and row.get("reset_decoder_on_encoder_slide", "") != "":
         decoder_rebase = "prefix-roll" if str(row.get("reset_decoder_on_encoder_slide", "")).lower() == "true" else "continuous"
         lines.append(f"DEC RESET:     {decoder_rebase}")
+    if "decoder_roll_overlap_seconds" in row and row.get("decoder_roll_overlap_seconds", "") != "":
+        lines.append(f"ROLL OVERLAP:  {row.get('decoder_roll_overlap_seconds', '')}s")
     lines.append(f"MODE:          {'cw' if str(row.get('is_cw_model', '')).lower() == 'true' else 'local'}")
     lines.append(f"WER:           {_fmt_percent(row.get('wer'))}")
     lines.append(f"STRICT WERs:   {_format_strict_display(row)}")

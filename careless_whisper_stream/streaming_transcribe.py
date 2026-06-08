@@ -52,6 +52,7 @@ def transcribe(
     use_sliding_encoder_cache: bool = False,
     disable_encoder_kv_cache: bool = False,
     reset_decoder_on_encoder_slide: bool = False,
+    decoder_roll_overlap_seconds: float = 5.0,
     streaming_timestamps: bool = False,
     force_first_tokens_timestamps: bool = False,
     verbose: bool = True,
@@ -114,6 +115,7 @@ def transcribe(
         use_sliding_encoder_cache=use_sliding_encoder_cache,
         disable_encoder_kv_cache=disable_encoder_kv_cache,
         reset_decoder_on_encoder_slide=reset_decoder_on_encoder_slide,
+        decoder_roll_overlap_seconds=decoder_roll_overlap_seconds,
         streaming_timestamps=streaming_timestamps,
         force_first_tokens_timestamps=force_first_tokens_timestamps,
         verbose=verbose,
@@ -229,6 +231,7 @@ def cli():
     parser.add_argument("--use_sliding_encoder_cache", action="store_true", help="Slide encoder KV cache instead of resetting at max context")
     parser.add_argument("--disable_encoder_kv_cache", action="store_true", help="Recompute full encoder prefix instead of using encoder KV cache")
     parser.add_argument("--reset_decoder_on_encoder_slide", action="store_true", help="Roll decoder prefix tokens into prompt as sliding encoder cache prunes old audio")
+    parser.add_argument("--decoder_roll_overlap_seconds", type=float, default=5.0, help="Seconds of retained encoder audio kept before the active decoder prefix")
 
     args = parser.parse_args().__dict__
 
