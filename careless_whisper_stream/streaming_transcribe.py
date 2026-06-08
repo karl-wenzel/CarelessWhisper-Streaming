@@ -96,16 +96,12 @@ def transcribe(
 
     extra_gran_blocks = extra_initial_blocks if extra_initial_blocks is not None else model.encoder.extra_gran_blocks
 
-    use_timestamp_tokens = streaming_timestamps or reset_decoder_on_encoder_slide
-
     # first we'll use
     decoding_options = DecodingOptions(
         language=language,
         gran=(ms_gran // 20),
         single_frame_mel=single_frame_mel,
-        # Requirement: timestamp-token decoding is needed for accurate decoder
-        # prefix rolling when the sliding encoder prunes old audio context.
-        without_timestamps=not use_timestamp_tokens,
+        without_timestamps=True,
         beam_size=beam_size if temperature == 0 else None,
         temperature=temperature,
         length_penalty=None,
@@ -118,7 +114,7 @@ def transcribe(
         use_sliding_encoder_cache=use_sliding_encoder_cache,
         disable_encoder_kv_cache=disable_encoder_kv_cache,
         reset_decoder_on_encoder_slide=reset_decoder_on_encoder_slide,
-        streaming_timestamps=use_timestamp_tokens,
+        streaming_timestamps=streaming_timestamps,
         force_first_tokens_timestamps=force_first_tokens_timestamps,
         verbose=verbose,
         **kwargs
