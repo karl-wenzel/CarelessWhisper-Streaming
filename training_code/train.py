@@ -328,7 +328,12 @@ if __name__ == "__main__":
         self_supervision=args.self_supervision,
         slices_num=args.num_slices,
         random_masking=args.random_masking,
-        encoder_positional_mode=args.encoder_positional_mode
+        encoder_positional_mode=args.encoder_positional_mode,
+        stale_encoder_cache_train=args.stale_encoder_cache_train,
+        stale_cache_context_seconds=args.stale_cache_context_seconds,
+        stale_cache_max_stale_seconds=args.stale_cache_max_stale_seconds,
+        stale_cache_fresh_fraction=args.stale_cache_fresh_fraction,
+        stale_cache_bucket_weights=args.stale_cache_bucket_weights,
     )
 
     if args.lmdb:
@@ -339,6 +344,12 @@ if __name__ == "__main__":
     if cfg.streaming_train:
         assert cfg.sim_stream == cfg.streaming_train, "When running in full stream mode you must simulate streaming!"
         cfg.sim_stream = True
+
+    if cfg.stale_encoder_cache_train:
+        if cfg.encoder_positional_mode != "alibi":
+            raise ValueError("--stale_encoder_cache_train requires --encoder_positional_mode alibi.")
+        if cfg.random_masking:
+            raise ValueError("--stale_encoder_cache_train is not compatible with --random_masking.")
 
     if cfg.ckpt is not None:
         print(f"Resolved resume checkpoint: {cfg.ckpt}")

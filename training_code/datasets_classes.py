@@ -177,6 +177,7 @@ class AlignedTextGridDataset(torch.utils.data.Dataset):
                  extra_gran_blocks: int = 0,
                  n_mels: int = 80,
                  multilingual: bool = False,
+                 max_audio_seconds: float = 30.0,
                  separator='\t',
                  split='train'): # most of the times we train just on english librispeech
         super().__init__()
@@ -196,6 +197,7 @@ class AlignedTextGridDataset(torch.utils.data.Dataset):
         self.extra_gran_blocks = extra_gran_blocks
         self.n_mels = n_mels
         self.multilingual = multilingual
+        self.max_audio_samples = int(max_audio_seconds * sample_rate)
 
     def __len__(self):
         return int(self.custom_len) if 0 < self.custom_len < len(self.ds_df) else len(self.ds_df)
@@ -222,7 +224,10 @@ class AlignedTextGridDataset(torch.utils.data.Dataset):
         item = self.ds_df.iloc[index]
 
         wav_path = _resolve_csv_relative_path(item["__source_csv_path"], item["wav_path"])
-        audio = careless_whisper_stream.pad_or_trim(careless_whisper_stream.load_audio(wav_path, sr=self.sr))
+        audio = careless_whisper_stream.pad_or_trim(
+            careless_whisper_stream.load_audio(wav_path, sr=self.sr),
+            length=self.max_audio_samples,
+        )
         mel = self._calc_mel(audio)
         
         tg_path = _resolve_csv_relative_path(item["__source_csv_path"], item["tg_path"])
@@ -309,6 +314,7 @@ class AlignedTextGridDatasetLMDB(torch.utils.data.Dataset):
                  extra_gran_blocks: int = 0,
                  n_mels: int = 80,
                  multilingual: bool = False,
+                 max_audio_seconds: float = 30.0,
                  separator='\t',
                  split='train'):
         super().__init__()
@@ -329,6 +335,7 @@ class AlignedTextGridDatasetLMDB(torch.utils.data.Dataset):
         self.extra_gran_blocks = extra_gran_blocks
         self.n_mels = n_mels
         self.multilingual = multilingual
+        self.max_audio_samples = int(max_audio_seconds * sample_rate)
         
         # LMDB Setup
         self.lmdb_paths = lmdb_paths
@@ -371,7 +378,10 @@ class AlignedTextGridDatasetLMDB(torch.utils.data.Dataset):
 
         # 1. Load Audio
         wav_path = _resolve_csv_relative_path(item["__source_csv_path"], item["wav_path"])
-        audio = careless_whisper_stream.pad_or_trim(careless_whisper_stream.load_audio(wav_path, sr=self.sr))
+        audio = careless_whisper_stream.pad_or_trim(
+            careless_whisper_stream.load_audio(wav_path, sr=self.sr),
+            length=self.max_audio_samples,
+        )
         mel = self._calc_mel(audio)
         
         # 2. Load Intervals (Logic Check: LMDB vs File System)

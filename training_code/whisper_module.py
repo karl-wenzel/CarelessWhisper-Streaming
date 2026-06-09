@@ -13,6 +13,7 @@ from torch.optim.adamw import AdamW
 from training_code.utils import Config
 from careless_whisper_stream import StreamingWhisper
 from careless_whisper_stream.audio import HOP_LENGTH
+from careless_whisper_stream.streaming_model import EncoderCacheState
 from careless_whisper_stream.normalizers import BasicTextNormalizer, EnglishTextNormalizer, GermanTextNormalizer
 from pytorch_lightning import LightningModule
 from torch.optim.lr_scheduler import LinearLR, ReduceLROnPlateau
@@ -206,6 +207,7 @@ class LoRAStreamedWhisper(WhisperCustomModel):
         self.eval_script = eval_script
         self.calc_rwer_arwer = calc_rwer_arwer
         self.lmdb_paths = cfg.lmdb_paths
+        self.stale_cache_bucket_weights = self._parse_stale_cache_bucket_weights(cfg.stale_cache_bucket_weights)
 
         # for stream mode train
         self.num_frames = self.model.dims.n_audio_ctx // self.enc_emb_gran # 1500 // enc_emb_gran
@@ -216,6 +218,152 @@ class LoRAStreamedWhisper(WhisperCustomModel):
         self.last_out = None
         self.__train_dataset = train_dataset
         self.__eval_dataset = eval_dataset
+
+    def _parse_stale_cache_bucket_weights(self, spec: str) -> list[float]:
+        try:
+            weights = [float(value.strip()) for value in spec.split(",") if value.strip()]
+        except ValueError as exc:
+            raise ValueError("--stale_cache_bucket_weights must be comma-separated numbers.") from exc
+
+        if not weights or any(weight < 0 for weight in weights) or sum(weights) <= 0:
+            raise ValueError("--stale_cache_bucket_weights must contain at least one positive weight.")
+
+        return weights
+
+    def _stale_cache_context_frames(self) -> int:
+        raw_frames = int(self.cfg.stale_cache_context_seconds / 0.02)
+        frames = (raw_frames // self.enc_emb_gran) * self.enc_emb_gran
+        if frames <= 0:
+            raise ValueError("--stale_cache_context_seconds is too small for the encoder granularity.")
+        if frames > self.model.dims.n_audio_ctx:
+            raise ValueError("--stale_cache_context_seconds must not exceed Whisper's 30s audio context.")
+        return frames
+
+    def _stale_cache_training_audio_seconds(self) -> float:
+        if not self.cfg.stale_encoder_cache_train:
+            return 30.0
+        if self.cfg.stale_cache_max_stale_seconds < 0:
+            raise ValueError("--stale_cache_max_stale_seconds must be non-negative.")
+        return self.cfg.stale_cache_context_seconds + self.cfg.stale_cache_max_stale_seconds
+
+    def _point_end_seconds(self, index: int) -> float:
+        return (index + 1) * self.enc_emb_gran * 0.02
+
+    def _point_stale_seconds(self, index: int, retained_frames: int) -> float:
+        return max(0.0, ((index + 1) * self.enc_emb_gran - retained_frames) * 0.02)
+
+    def _point_label_start_seconds(self, index: int, retained_frames: int) -> float:
+        return max(0.0, ((index + 1) * self.enc_emb_gran - retained_frames) * 0.02)
+
+    def _select_evenly(self, values: list[int], count: int) -> list[int]:
+        if count <= 0 or not values:
+            return []
+        if count >= len(values):
+            return list(values)
+        if count == 1:
+            return [values[len(values) // 2]]
+
+        last = len(values) - 1
+        return [values[round(i * last / (count - 1))] for i in range(count)]
+
+    def _candidate_stream_points(self, endpoints: Tensor, input_ids: Tensor) -> list[int]:
+        valid_endpoints = endpoints[endpoints != -100]
+        biggest_endpoint = valid_endpoints.max().item() if valid_endpoints.numel() > 0 else 0.0
+        available_granules = input_ids.shape[-1] // (self.enc_emb_gran * 2)
+        text_granules = int((biggest_endpoint / 0.02) // self.enc_emb_gran) + int(1 / (self.enc_emb_gran * 0.02)) + 1
+        max_granules = min(available_granules, max(self.enc_context + 1, text_granules))
+        return list(range(self.enc_context, max_granules))
+
+    def _bucket_for_staleness(self, stale_seconds: float, max_stale_seconds: float) -> int:
+        if max_stale_seconds <= 0:
+            return 0
+        ratio = min(1.0, max(0.0, stale_seconds / max_stale_seconds))
+        return min(len(self.stale_cache_bucket_weights) - 1, int(ratio * len(self.stale_cache_bucket_weights)))
+
+    def _weighted_stale_points(self, candidates: list[int], count: int, retained_frames: int, deterministic: bool) -> list[int]:
+        if count <= 0 or not candidates:
+            return []
+        if count >= len(candidates):
+            return list(candidates)
+
+        max_stale = max(self._point_stale_seconds(index, retained_frames) for index in candidates)
+        buckets = [[] for _ in self.stale_cache_bucket_weights]
+        for index in candidates:
+            bucket = self._bucket_for_staleness(self._point_stale_seconds(index, retained_frames), max_stale)
+            buckets[bucket].append(index)
+
+        if deterministic:
+            total_weight = sum(self.stale_cache_bucket_weights)
+            raw_counts = [count * weight / total_weight for weight in self.stale_cache_bucket_weights]
+            counts = [min(len(bucket), int(raw_count)) for bucket, raw_count in zip(buckets, raw_counts)]
+            remaining = count - sum(counts)
+            remainders = sorted(
+                range(len(raw_counts)),
+                key=lambda bucket: raw_counts[bucket] - int(raw_counts[bucket]),
+                reverse=True,
+            )
+            for bucket in remainders:
+                if remaining <= 0:
+                    break
+                room = len(buckets[bucket]) - counts[bucket]
+                if room <= 0:
+                    continue
+                counts[bucket] += 1
+                remaining -= 1
+
+            selected = []
+            for bucket, bucket_count in zip(buckets, counts):
+                selected.extend(self._select_evenly(bucket, bucket_count))
+
+            if len(selected) < count:
+                leftovers = [index for index in candidates if index not in set(selected)]
+                selected.extend(self._select_evenly(leftovers, count - len(selected)))
+            return sorted(selected[:count])
+
+        remaining = list(candidates)
+        selected = []
+        while remaining and len(selected) < count:
+            max_stale = max(self._point_stale_seconds(index, retained_frames) for index in remaining)
+            weights = [
+                self.stale_cache_bucket_weights[
+                    self._bucket_for_staleness(self._point_stale_seconds(index, retained_frames), max_stale)
+                ]
+                for index in remaining
+            ]
+            chosen = random.choices(remaining, weights=weights, k=1)[0]
+            selected.append(chosen)
+            remaining.remove(chosen)
+        return sorted(selected)
+
+    def _get_stale_cache_sample_plan(self, endpoints: Tensor, input_ids: Tensor, step: str) -> list[tuple[int, bool]]:
+        retained_frames = self._stale_cache_context_frames()
+        candidates = self._candidate_stream_points(endpoints, input_ids)
+        if not candidates:
+            return []
+
+        total_count = len(candidates)
+        if self.cfg.streaming_fraction < 1:
+            total_count = max(1, int(len(candidates) * self.cfg.streaming_fraction) + 1)
+        total_count = min(total_count, len(candidates))
+
+        fresh_fraction = min(1.0, max(0.0, self.cfg.stale_cache_fresh_fraction))
+        fresh_count = min(total_count, max(1, round(total_count * fresh_fraction)))
+        stale_count = max(0, total_count - fresh_count)
+
+        deterministic = step != "train"
+        if deterministic:
+            fresh_points = self._select_evenly(candidates, fresh_count)
+        else:
+            fresh_points = sorted(random.sample(candidates, k=fresh_count))
+
+        stale_candidates = [
+            index for index in candidates
+            if self._point_stale_seconds(index, retained_frames) > 0
+        ]
+        stale_points = self._weighted_stale_points(stale_candidates, stale_count, retained_frames, deterministic)
+
+        plan = [(index, False) for index in fresh_points] + [(index, True) for index in stale_points]
+        return sorted(plan, key=lambda item: (item[0], item[1]))
 
     def _calc_labels(self, labels: Tensor, endpoints: Tensor, index: int, out: Tensor = None):
         if self.cfg.self_supervision and out is not None:
@@ -325,6 +473,161 @@ class LoRAStreamedWhisper(WhisperCustomModel):
 
         return sample_points, mask
 
+    def _calc_interval_labels(self, labels: Tensor, endpoints: Tensor, start_seconds: float, end_seconds: float):
+        available = endpoints != -100
+        mask = available & (endpoints <= end_seconds)
+        if start_seconds > 0:
+            mask = mask & (endpoints > start_seconds)
+
+        clone_labels = labels.clone()
+        clone_labels[~mask] = -100
+
+        for batch_idx in range(labels.shape[0]):
+            row_available = available[batch_idx]
+            after_end = torch.nonzero(
+                row_available & (endpoints[batch_idx] > end_seconds),
+                as_tuple=False,
+            )
+            if after_end.numel() > 0:
+                eot_idx = after_end[0].item()
+            else:
+                valid_positions = torch.nonzero(row_available, as_tuple=False)
+                eot_idx = valid_positions[-1].item() if valid_positions.numel() > 0 else 0
+
+            clone_labels[batch_idx, eot_idx] = self.tokenizer.eot
+
+        return clone_labels
+
+    def _encode_fresh_retained_window(self, input_ids: Tensor, index: int, retained_frames: int) -> Tensor:
+        target_end_frame = (index + 1) * self.enc_emb_gran
+        window_start_frame = max(0, target_end_frame - retained_frames)
+        mel_window = input_ids[..., window_start_frame * 2: target_end_frame * 2]
+        window_frames = mel_window.shape[-1] // 2
+
+        was_stream = self.model.encoder.use_stream
+        was_mask = self.model.encoder.use_mask
+        try:
+            self.model.encoder._use_stream(False)
+            self.model.encoder._use_mask(True)
+            return self.model.encoder(
+                mel_window,
+                index=[0, window_frames],
+                mask=True,
+            )
+        finally:
+            self.model.encoder._use_stream(was_stream)
+            self.model.encoder._use_mask(was_mask)
+
+    def _encode_stale_sliding_window(self, input_ids: Tensor, index: int, retained_frames: int) -> Tensor:
+        cache_state = EncoderCacheState(use_sliding=True, max_frames=retained_frames)
+        enc_kv_cache, enc_hooks = self.model.install_encoder_kv_cache_hooks(cache_state=cache_state)
+        was_stream = self.model.encoder.use_stream
+        was_mask = self.model.encoder.use_mask
+        original_gran = self.model.encoder.gran
+
+        batch_size = input_ids.shape[0]
+        audio_features = torch.empty((batch_size, 0, self.model.dims.n_audio_state), device=input_ids.device)
+        mel_buffer = input_ids[..., :0]
+        min_mel_frames = self.enc_emb_gran * 2 * (self.enc_context + 1)
+
+        try:
+            self.model.encoder._use_stream(True)
+            self.model.encoder._use_mask(False)
+
+            for chunk_index in range(index + 1):
+                mel_start = chunk_index * self.enc_emb_gran * 2
+                mel_end = (chunk_index + 1) * self.enc_emb_gran * 2
+                mel_buffer = torch.cat([mel_buffer, input_ids[..., mel_start:mel_end]], dim=-1)
+
+                if mel_buffer.shape[-1] < min_mel_frames:
+                    continue
+
+                # Requirement: train on the same stale hidden-state regime as
+                # sliding-cache evaluation, including one granule of boundary
+                # recompute, while keeping the decoder-visible window <= 30s.
+                overlap_frames = min(self.enc_emb_gran, cache_state.cached_frames)
+                if overlap_frames > 0:
+                    self.model.prune_encoder_kv_cache_tail(enc_kv_cache, overlap_frames)
+                    cache_state.cached_frames -= overlap_frames
+                    audio_features = audio_features[:, :-overlap_frames].detach()
+                    self.model.encoder.gran = original_gran + overlap_frames
+
+                try:
+                    new_features = self.model.encoder(
+                        mel_buffer,
+                        kv_cache=enc_kv_cache,
+                        mask=True if overlap_frames > 0 else None,
+                    )
+                finally:
+                    self.model.encoder.gran = original_gran
+
+                frames_to_prune = cache_state.commit(new_features.shape[1])
+                self.model.prune_encoder_kv_cache(enc_kv_cache, frames_to_prune)
+
+                retained = audio_features[:, frames_to_prune:] if frames_to_prune > 0 else audio_features
+                audio_features = new_features if retained.shape[1] == 0 else torch.cat([retained, new_features], dim=1)
+
+                target_mel_frames = cache_state.cached_frames * 2
+                if target_mel_frames > 0 and mel_buffer.shape[-1] > target_mel_frames:
+                    mel_buffer = mel_buffer[..., -target_mel_frames:]
+
+                if chunk_index != index:
+                    audio_features = audio_features.detach()
+
+            if audio_features.shape[1] == 0:
+                raise RuntimeError("Stale-cache training produced no encoder features.")
+            return audio_features
+        finally:
+            self.model.encoder.gran = original_gran
+            self.model.encoder._use_stream(was_stream)
+            self.model.encoder._use_mask(was_mask)
+            for hook in enc_hooks:
+                hook.remove()
+
+    def _forward_step_stale_cache(self, batch, step):
+        input_ids = batch["input_ids"]
+        labels = batch["labels"].long()
+        dec_input_ids = batch["dec_input_ids"].long()
+        endpoints = batch["endpoints"]
+        retained_frames = self._stale_cache_context_frames()
+        sample_plan = self._get_stale_cache_sample_plan(endpoints, input_ids, step)
+
+        if not sample_plan:
+            return self._forward_step_stream(batch, step)
+
+        if step == "train":
+            optimizer = self.optimizers()
+
+        last_out = None
+        last_loss = None
+        last_labels = labels
+
+        for index, use_stale_cache in sample_plan:
+            if use_stale_cache:
+                audio_features = self._encode_stale_sliding_window(input_ids, index, retained_frames)
+            else:
+                audio_features = self._encode_fresh_retained_window(input_ids, index, retained_frames)
+
+            out = self.model.decoder(dec_input_ids, audio_features, dump_type="None")
+
+            if step == "train":
+                optimizer.zero_grad()
+
+            end_seconds = self._point_end_seconds(index)
+            start_seconds = self._point_label_start_seconds(index, retained_frames)
+            frame_labels = self._calc_interval_labels(labels, endpoints, start_seconds, end_seconds)
+            loss = self.loss_fn(out.view(-1, out.size(-1)), frame_labels.view(-1))
+
+            if step == "train":
+                self.manual_backward(loss)
+                optimizer.step()
+
+            last_out = out
+            last_loss = loss
+            last_labels = frame_labels
+
+        return {"out": last_out, "loss": last_loss, "eval_labels": last_labels}
+
     def _forward_step_stream(self, batch, step):
         input_ids = batch["input_ids"]
         labels = batch["labels"].long()
@@ -398,7 +701,10 @@ class LoRAStreamedWhisper(WhisperCustomModel):
             except:
                 print("Could not decode labels")
 
-        if self.full_stream:
+        if self.full_stream and self.cfg.stale_encoder_cache_train:
+            result = self._forward_step_stale_cache(batch, "train")
+            loss = result["loss"]
+        elif self.full_stream:
             result = self._forward_step_stream(batch, "train")
             loss = result["loss"]
         else:
@@ -409,13 +715,18 @@ class LoRAStreamedWhisper(WhisperCustomModel):
         return loss
 
     def validation_step(self, batch, batch_id):
-        if self.full_stream:
+        eval_labels = batch["labels"]
+        if self.full_stream and self.cfg.stale_encoder_cache_train:
+            result = self._forward_step_stale_cache(batch, "val")
+            out, loss = result["out"], result["loss"]
+            eval_labels = result.get("eval_labels", eval_labels)
+        elif self.full_stream:
             result = self._forward_step_stream(batch, "val")
             out, loss = result["out"], result["loss"]
         else:
             out, loss = self._forward_step(batch, "val")
 
-        wer = self.calc_wer_val(out, batch["labels"])
+        wer = self.calc_wer_val(out, eval_labels)
 
         self.log("val/loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
         self.log("val/wer", wer, on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
@@ -456,6 +767,16 @@ class LoRAStreamedWhisper(WhisperCustomModel):
     def get_dataset(self, ds_path, split):
         print(f"Stream simulation mode: {self.simulate_stream}")
         print(f"Using precomputed features: {self.cfg.precomputed_features}")
+        max_audio_seconds = self._stale_cache_training_audio_seconds()
+        if self.cfg.stale_encoder_cache_train:
+            retained_seconds = self._stale_cache_context_frames() * 0.02
+            print(
+                "Stale encoder-cache training: "
+                f"retained_context={retained_seconds:.2f}s, "
+                f"max_audio={max_audio_seconds:.2f}s, "
+                f"fresh_fraction={self.cfg.stale_cache_fresh_fraction}, "
+                f"bucket_weights={self.stale_cache_bucket_weights}"
+            )
         
         if self.full_stream:
             if self.cfg.precomputed_features:
@@ -464,7 +785,15 @@ class LoRAStreamedWhisper(WhisperCustomModel):
                     custom_len=self.cfg.custom_len
                 )
             
-            return AlignedTextGridDataset(ds_path=ds_path, get_streamed_mel=True, gran=self.enc_emb_gran, extra_gran_blocks=self.enc_context, n_mels=self.model.dims.n_mels, multilingual=self.cfg.multilingual)
+            return AlignedTextGridDataset(
+                ds_path=ds_path,
+                get_streamed_mel=True,
+                gran=self.enc_emb_gran,
+                extra_gran_blocks=self.enc_context,
+                n_mels=self.model.dims.n_mels,
+                multilingual=self.cfg.multilingual,
+                max_audio_seconds=max_audio_seconds,
+            )
         
         return WAVsDataset(ds_path=ds_path, get_streamed_mel=self.simulate_stream)
     

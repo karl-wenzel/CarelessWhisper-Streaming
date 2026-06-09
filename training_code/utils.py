@@ -52,6 +52,11 @@ class Config:
     slices_num: int = 20
     random_masking: bool = False
     encoder_positional_mode: str = "sinusoidal"
+    stale_encoder_cache_train: bool = False
+    stale_cache_context_seconds: float = 25.0
+    stale_cache_max_stale_seconds: float = 30.0
+    stale_cache_fresh_fraction: float = 0.2
+    stale_cache_bucket_weights: str = "1"
 
     use_from_ft_ckpt: bool = False
 
@@ -106,6 +111,11 @@ def parse_cmdl():
     parser.add_argument('--streaming_random', action="store_true", help="Train using random sample points, not sequentially!")
     parser.add_argument('--random_masking', action="store_true", help="Train using random masking.")
     parser.add_argument('--multilingual', action="store_true", help="Train using multilingual dataset, assuming lang field is available.")
+    parser.add_argument('--stale_encoder_cache_train', action="store_true", help="Train on sliding encoder-cache features with stale left-context influence.")
+    parser.add_argument('--stale_cache_context_seconds', type=float, default=25.0, help="Retained encoder context for stale-cache training. Rounded down to encoder granularity.")
+    parser.add_argument('--stale_cache_max_stale_seconds', type=float, default=30.0, help="How far beyond the retained context to load/sample audio for stale-cache training.")
+    parser.add_argument('--stale_cache_fresh_fraction', type=float, default=0.2, help="Fraction of stale-cache training points recomputed from a fresh retained window.")
+    parser.add_argument('--stale_cache_bucket_weights', type=str, default="1", help="Comma-separated relative sampling weights over equal-width staleness buckets.")
     parser.add_argument(
         '--encoder_positional_mode',
         choices=["sinusoidal", "alibi"],
