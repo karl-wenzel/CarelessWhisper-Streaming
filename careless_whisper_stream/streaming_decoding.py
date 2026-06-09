@@ -71,6 +71,8 @@ class DecodingOptions:
     use_ca_kv_cache: bool = False
     use_sliding_encoder_cache: bool = False
     disable_encoder_kv_cache: bool = False
+    encoder_cache_diagnostics: bool = False
+    encoder_cache_diagnostic_interval: int = 1
     reset_decoder_on_encoder_slide: bool = False
     decoder_roll_overlap_seconds: float = 5.0
     decoder_roll_min_interval_seconds: float = 2.0
@@ -1036,6 +1038,10 @@ class DecodingTask:
                 raise ValueError("use_sliding_encoder_cache requires an ALiBi encoder positional mode")
             if not options.single_frame_mel:
                 raise ValueError("use_sliding_encoder_cache requires single_frame_mel=True")
+        if options.encoder_cache_diagnostics and not options.use_sliding_encoder_cache:
+            raise ValueError("encoder_cache_diagnostics requires use_sliding_encoder_cache")
+        if options.encoder_cache_diagnostic_interval <= 0:
+            raise ValueError("encoder_cache_diagnostic_interval must be positive")
         if options.reset_decoder_on_encoder_slide and not options.use_sliding_encoder_cache:
             raise ValueError("reset_decoder_on_encoder_slide requires use_sliding_encoder_cache")
         if options.decoder_roll_overlap_seconds < 0:
@@ -1212,6 +1218,77 @@ class DecodingTask:
 
         end_index = start_index + audio_features.shape[1]
         self.audio_features[:, start_index:end_index] = audio_features
+
+    def _encoder_reference_features_for_retained_window(self) -> Tensor:
+        retained_encoder_frames = self.encoder_cache_state.cached_frames
+        retained_mel_frames = retained_encoder_frames * 2
+        mel_window = self.mel[..., -retained_mel_frames:]
+
+        was_stream = self.model.encoder.use_stream
+        was_mask = self.model.encoder.use_mask
+        old_hooks = self.enc_hooks
+        for hook in old_hooks:
+            hook.remove()
+        self.enc_hooks = []
+
+        try:
+            self.model.encoder._use_stream(False)
+            self.model.encoder._use_mask(True)
+            return self.model.encoder(
+                mel_window,
+                index=[0, retained_encoder_frames],
+                mask=True,
+            ).detach()
+        finally:
+            self.model.encoder._use_stream(was_stream)
+            self.model.encoder._use_mask(was_mask)
+            self.enc_kv_cache, self.enc_hooks = self.model.install_encoder_kv_cache_hooks(
+                cache=self.enc_kv_cache,
+                cache_state=self.encoder_cache_state,
+            )
+
+    def _maybe_print_encoder_cache_diagnostics(self):
+        if not self.options.encoder_cache_diagnostics:
+            return
+        if not self.options.use_sliding_encoder_cache:
+            return
+        if self.options.use_ca_kv_cache:
+            if self.frame_counter % self.options.encoder_cache_diagnostic_interval == 0:
+                print("[encoder-cache] diagnostics skipped: use_ca_kv_cache path does not maintain self.audio_features")
+            return
+        if self.frame_counter % self.options.encoder_cache_diagnostic_interval != 0:
+            return
+        if self.audio_features.shape[1] <= 0 or self.encoder_cache_state.cached_frames <= 0:
+            return
+
+        reference_features = self._encoder_reference_features_for_retained_window()
+        live_features = self.audio_features.detach()
+        common_frames = min(live_features.shape[1], reference_features.shape[1])
+        if common_frames <= 0:
+            return
+
+        live_common = live_features[:, -common_frames:].float()
+        ref_common = reference_features[:, -common_frames:].float()
+        diff = (live_common - ref_common).abs()
+        first_window = min(15, common_frames)
+        tail_window = min(15, common_frames)
+        first_max = diff[:, :first_window].max().item()
+        tail_max = diff[:, -tail_window:].max().item()
+        print(
+            "[encoder-cache] "
+            f"frame={self.frame_counter} "
+            f"audio_end={self.encoder_cache_state.next_frame * 0.02:.2f}s "
+            f"cache_start={self.encoder_cache_state.cache_start_frame * 0.02:.2f}s "
+            f"cached={self.encoder_cache_state.cached_frames}f "
+            f"pruned={self.last_encoder_cache_prune}f "
+            f"overlap={self.last_encoder_cache_overlap}f "
+            f"live_shape={tuple(live_features.shape)} "
+            f"ref_shape={tuple(reference_features.shape)} "
+            f"max={diff.max().item():.6g} "
+            f"mean={diff.mean().item():.6g} "
+            f"first{first_window}_max={first_max:.6g} "
+            f"tail{tail_window}_max={tail_max:.6g}"
+        )
 
     def _trim_sliding_mel(self):
         if not self.options.use_sliding_encoder_cache or self.mel is None:
@@ -1707,6 +1784,7 @@ class DecodingTask:
         # call the main sampling loop
         if not self.options.use_ca_kv_cache:
             self._get_audio_features(self.mel) # encoder forward pass, updates self.audio_features
+            self._maybe_print_encoder_cache_diagnostics()
             self._maybe_roll_decoder_prefix_after_encoder_prune()
             audio_features = self.audio_features
             decoder_audio_features = audio_features if self.options.use_sliding_encoder_cache else audio_features[:, :self.index]

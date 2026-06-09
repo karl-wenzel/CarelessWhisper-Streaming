@@ -48,6 +48,8 @@ EVALUATION_ONLY_PARAMETER_NAMES = [
     "wir_n",
     "time_bin_wer",
     "time_bin_seconds",
+    "encoder_cache_diagnostics",
+    "encoder_cache_diagnostic_interval",
     "decoder_roll_diagnostics",
     "verbose",
 ]

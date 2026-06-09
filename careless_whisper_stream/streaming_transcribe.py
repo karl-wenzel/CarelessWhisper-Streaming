@@ -51,6 +51,8 @@ def transcribe(
     max_sec_context: int = 30,
     use_sliding_encoder_cache: bool = False,
     disable_encoder_kv_cache: bool = False,
+    encoder_cache_diagnostics: bool = False,
+    encoder_cache_diagnostic_interval: int = 1,
     reset_decoder_on_encoder_slide: bool = False,
     decoder_roll_overlap_seconds: float = 5.0,
     decoder_roll_min_interval_seconds: float = 2.0,
@@ -118,6 +120,8 @@ def transcribe(
         maximal_seconds_context=max_sec_context,
         use_sliding_encoder_cache=use_sliding_encoder_cache,
         disable_encoder_kv_cache=disable_encoder_kv_cache,
+        encoder_cache_diagnostics=encoder_cache_diagnostics,
+        encoder_cache_diagnostic_interval=encoder_cache_diagnostic_interval,
         reset_decoder_on_encoder_slide=reset_decoder_on_encoder_slide,
         decoder_roll_overlap_seconds=decoder_roll_overlap_seconds,
         decoder_roll_min_interval_seconds=decoder_roll_min_interval_seconds,
@@ -238,6 +242,8 @@ def cli():
     parser.add_argument("--max_sec_context", type=int, default=30, help="Max context window size in seconds")
     parser.add_argument("--use_sliding_encoder_cache", action="store_true", help="Slide encoder KV cache instead of resetting at max context")
     parser.add_argument("--disable_encoder_kv_cache", action="store_true", help="Recompute full encoder prefix instead of using encoder KV cache")
+    parser.add_argument("--encoder_cache_diagnostics", action="store_true", help="Print sliding encoder cache vs retained-window recompute diff stats")
+    parser.add_argument("--encoder_cache_diagnostic_interval", type=int, default=1, help="Print encoder cache diagnostics every N decode chunks")
     parser.add_argument("--reset_decoder_on_encoder_slide", action="store_true", help="Roll decoder prefix tokens into prompt as sliding encoder cache prunes old audio")
     parser.add_argument("--decoder_roll_overlap_seconds", type=float, default=5.0, help="Seconds of retained encoder audio kept before the active decoder prefix")
     parser.add_argument("--decoder_roll_min_interval_seconds", type=float, default=2.0, help="Minimum seconds between decoder prefix rolls")

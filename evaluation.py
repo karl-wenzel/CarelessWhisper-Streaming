@@ -725,6 +725,8 @@ def evaluate():
     parser.add_argument("-ca_kv_cache", action="store_true", help="Use cross-attention KV cache")
     parser.add_argument("--use_sliding_encoder_cache", action="store_true", help="Slide encoder KV cache instead of resetting at max context")
     parser.add_argument("--disable_encoder_kv_cache", action="store_true", help="Recompute the full encoder prefix at every streaming step for cache diagnostics.")
+    parser.add_argument("--encoder_cache_diagnostics", action="store_true", help="Print sliding encoder cache vs retained-window recompute diff stats during transcription.")
+    parser.add_argument("--encoder_cache_diagnostic_interval", type=int, default=1, help="Print encoder cache diagnostics every N decode chunks.")
     parser.add_argument("--reset_decoder_on_encoder_slide", action="store_true", help="Roll decoder prefix tokens into prompt as sliding encoder cache prunes old audio.")
     parser.add_argument("--decoder_roll_overlap_seconds", type=float, default=5.0, help="Seconds of retained encoder audio kept as overlap before the active decoder prefix during rolling decoder reset.")
     parser.add_argument("--decoder_roll_min_interval_seconds", type=float, default=2.0, help="Minimum seconds between decoder prefix rolls.")
@@ -751,6 +753,10 @@ def evaluate():
         raise ValueError("--time_bin_seconds must be positive.")
     if args.reset_decoder_on_encoder_slide and not args.use_sliding_encoder_cache:
         raise ValueError("--reset_decoder_on_encoder_slide requires --use_sliding_encoder_cache.")
+    if args.encoder_cache_diagnostics and not args.use_sliding_encoder_cache:
+        raise ValueError("--encoder_cache_diagnostics requires --use_sliding_encoder_cache.")
+    if args.encoder_cache_diagnostic_interval <= 0:
+        raise ValueError("--encoder_cache_diagnostic_interval must be positive.")
     if args.decoder_roll_overlap_seconds < 0:
         raise ValueError("--decoder_roll_overlap_seconds must be non-negative.")
     if args.decoder_roll_overlap_seconds >= args.max_sec_context:
@@ -844,6 +850,8 @@ def evaluate():
     cached_run = None
     if args.no_evaluation_cache:
         print("Evaluation cache bypassed by --no_evaluation_cache; transcribe outputs will be recalculated.")
+    elif args.encoder_cache_diagnostics:
+        print("Evaluation cache bypassed by --encoder_cache_diagnostics; transcribe outputs will be recalculated for diagnostic logging.")
     elif args.decoder_roll_diagnostics:
         print("Evaluation cache bypassed by --decoder_roll_diagnostics; transcribe outputs will be recalculated for diagnostic logging.")
     else:
@@ -935,6 +943,8 @@ def evaluate():
                 sa_kv_cache=args.sa_kv_cache,
                 use_sliding_encoder_cache=args.use_sliding_encoder_cache,
                 disable_encoder_kv_cache=args.disable_encoder_kv_cache,
+                encoder_cache_diagnostics=args.encoder_cache_diagnostics,
+                encoder_cache_diagnostic_interval=args.encoder_cache_diagnostic_interval,
                 reset_decoder_on_encoder_slide=args.reset_decoder_on_encoder_slide,
                 decoder_roll_overlap_seconds=args.decoder_roll_overlap_seconds,
                 decoder_roll_min_interval_seconds=args.decoder_roll_min_interval_seconds,
@@ -1117,6 +1127,8 @@ def evaluate():
         "ca_kv_cache": bool(args.ca_kv_cache),
         "use_sliding_encoder_cache": bool(args.use_sliding_encoder_cache),
         "disable_encoder_kv_cache": bool(args.disable_encoder_kv_cache),
+        "encoder_cache_diagnostics": bool(args.encoder_cache_diagnostics),
+        "encoder_cache_diagnostic_interval": int(args.encoder_cache_diagnostic_interval),
         "reset_decoder_on_encoder_slide": bool(args.reset_decoder_on_encoder_slide),
         "decoder_roll_overlap_seconds": float(args.decoder_roll_overlap_seconds),
         "decoder_roll_min_interval_seconds": float(args.decoder_roll_min_interval_seconds),
