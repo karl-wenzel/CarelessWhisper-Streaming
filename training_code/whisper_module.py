@@ -584,6 +584,24 @@ class LoRAStreamedWhisper(WhisperCustomModel):
             for hook in enc_hooks:
                 hook.remove()
 
+    def _anchor_stale_cache_loss_for_ddp(self, loss: Tensor) -> Tensor:
+        anchor = None
+        for param in self.model.parameters():
+            if not param.requires_grad:
+                continue
+            term = param.reshape(-1)[0] * 0.0
+            anchor = term if anchor is None else anchor + term
+
+        if anchor is None:
+            return loss
+
+        # Requirement: stale-cache training intentionally reuses cached encoder
+        # K/V tensors, so a particular loss may skip some LoRA projections. DDP
+        # with find_unused_parameters=False still needs those trainable tensors
+        # present in the graph; this zero term keeps behavior and gradients
+        # unchanged while satisfying that contract.
+        return loss + anchor.to(dtype=loss.dtype)
+
     def _forward_step_stale_cache(self, batch, step):
         input_ids = batch["input_ids"]
         labels = batch["labels"].long()
@@ -617,6 +635,8 @@ class LoRAStreamedWhisper(WhisperCustomModel):
             start_seconds = self._point_label_start_seconds(index, retained_frames)
             frame_labels = self._calc_interval_labels(labels, endpoints, start_seconds, end_seconds)
             loss = self.loss_fn(out.view(-1, out.size(-1)), frame_labels.view(-1))
+            if step == "train":
+                loss = self._anchor_stale_cache_loss_for_ddp(loss)
 
             if step == "train":
                 self.manual_backward(loss)
