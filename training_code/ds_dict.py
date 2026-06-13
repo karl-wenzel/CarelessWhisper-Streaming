@@ -81,5 +81,11 @@ ds_paths = {
 
     'REVLONG': {
         'test': "/mtec/local/RevLong/csv/tedlium_stm_long_35_120_strict.csv",
-    }
+    },
+
+    'VOX-POPULI-LONG': {
+        'train': "/mtec/local/VoxPopuliLong/csv/train.csv",
+        'val': "/mtec/local/VoxPopuliLong/csv/dev.csv",
+        'test': "/mtec/local/VoxPopuliLong/csv/test.csv",
+    },
 }
