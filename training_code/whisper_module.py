@@ -43,14 +43,20 @@ class WhisperCustomModel(LightningModule):
         return self.model(x)
 
     def calc_wer_val(self, out: Tensor, labels: Tensor):
-        out[out == -100] = self.tokenizer.eot
-        labels[labels == -100] = self.tokenizer.eot
-
         o_list, l_list = [], []
         for o, l in zip(out, labels):
-            o = torch.argmax(o, dim=1)
-            o_list.append(self.normalizer(self.tokenizer.decode(o)))
-            l_list.append(self.normalizer(self.tokenizer.decode(l)))
+            pred_ids = torch.argmax(o, dim=1)
+            valid_mask = l != -100
+
+            # Requirement: validation WER should reflect the same supervised
+            # positions as the teacher-forced loss. Stale-cache interval
+            # training masks both old and future tokens; decoding unmasked
+            # predictions there turns ignored positions into fake insertions.
+            pred_ids = pred_ids.masked_fill(~valid_mask, self.tokenizer.eot)
+            label_ids = l.masked_fill(~valid_mask, self.tokenizer.eot)
+
+            o_list.append(self.normalizer(self.tokenizer.decode(pred_ids)))
+            l_list.append(self.normalizer(self.tokenizer.decode(label_ids)))
             
         wer = self.metrics_wer.compute(references=l_list, predictions=o_list)
         return wer
