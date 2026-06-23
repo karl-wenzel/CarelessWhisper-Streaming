@@ -1270,10 +1270,21 @@ class DecodingTask:
         live_common = live_features[:, -common_frames:].float()
         ref_common = reference_features[:, -common_frames:].float()
         diff = (live_common - ref_common).abs()
+        eps = 1e-8
+        ref_rms = torch.sqrt((ref_common ** 2).mean())
+        rmse = torch.sqrt(((live_common - ref_common) ** 2).mean())
+        nrmse_pct = (rmse / (ref_rms + eps) * 100.0).item()
+        max_rel_pct = (diff.max() / (ref_common.abs().max() + eps) * 100.0).item()
         first_window = min(15, common_frames)
         tail_window = min(15, common_frames)
-        first_max = diff[:, :first_window].max().item()
-        tail_max = diff[:, -tail_window:].max().item()
+        first_diff = diff[:, :first_window]
+        tail_diff = diff[:, -tail_window:]
+        first_ref = ref_common[:, :first_window]
+        tail_ref = ref_common[:, -tail_window:]
+        first_max = first_diff.max().item()
+        tail_max = tail_diff.max().item()
+        first_max_rel_pct = (first_diff.max() / (first_ref.abs().max() + eps) * 100.0).item()
+        tail_max_rel_pct = (tail_diff.max() / (tail_ref.abs().max() + eps) * 100.0).item()
         print(
             "[encoder-cache] "
             f"frame={self.frame_counter} "
@@ -1286,8 +1297,12 @@ class DecodingTask:
             f"ref_shape={tuple(reference_features.shape)} "
             f"max={diff.max().item():.6g} "
             f"mean={diff.mean().item():.6g} "
+            f"nrmse_pct={nrmse_pct:.6g}% "
+            f"max_rel_pct={max_rel_pct:.6g}% "
             f"first{first_window}_max={first_max:.6g} "
-            f"tail{tail_window}_max={tail_max:.6g}"
+            f"first{first_window}_max_rel_pct={first_max_rel_pct:.6g}% "
+            f"tail{tail_window}_max={tail_max:.6g} "
+            f"tail{tail_window}_max_rel_pct={tail_max_rel_pct:.6g}%"
         )
 
     def _trim_sliding_mel(self):
