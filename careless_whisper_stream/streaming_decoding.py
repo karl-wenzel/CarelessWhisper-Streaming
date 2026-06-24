@@ -111,6 +111,45 @@ class DecodingResult:
     timed_text: str = ""
 
 
+def encoder_cache_diagnostics_summary_lines(samples: list[dict[str, float]]) -> list[str]:
+    if not samples:
+        return ["[encoder-cache-summary] no diagnostic samples collected"]
+
+    metric_keys = [
+        key
+        for key in samples[0].keys()
+        if key != "audio_end"
+    ]
+    buckets = [
+        ("all", lambda sample: True),
+        (">30s", lambda sample: sample["audio_end"] > 30.0),
+        (">50s", lambda sample: sample["audio_end"] > 50.0),
+    ]
+    lines = []
+
+    for bucket_name, include_sample in buckets:
+        bucket_samples = [
+            sample
+            for sample in samples
+            if include_sample(sample)
+        ]
+        if not bucket_samples:
+            lines.append(f"[encoder-cache-summary] bucket={bucket_name} samples=0")
+            continue
+
+        averaged_metrics = " ".join(
+            f"avg_{key}={sum(sample[key] for sample in bucket_samples) / len(bucket_samples):.6g}"
+            + ("%" if key.endswith("_pct") else "")
+            for key in metric_keys
+        )
+        lines.append(
+            f"[encoder-cache-summary] bucket={bucket_name} "
+            f"samples={len(bucket_samples)} {averaged_metrics}"
+        )
+
+    return lines
+
+
 class Inference:
     def logits(self, tokens: Tensor, audio_features: Tensor) -> Tensor:
         """Perform a forward pass on the decoder and return per-token logits"""
@@ -947,6 +986,7 @@ class DecodingTask:
         self.decoder_roll_diagnostic_pending_chunks = 0
         self.decoder_roll_count = 0
         self.decoder_last_roll_frame = -10**9
+        self.encoder_cache_diagnostic_samples: list[dict[str, float]] = []
         # Requirement: cached streaming must match full-prefix encoding. The
         # conv stack's right boundary affects the final visible encoder block,
         # so cached boundary frames are recomputed once future mel exists.
@@ -1274,7 +1314,9 @@ class DecodingTask:
         ref_rms = torch.sqrt((ref_common ** 2).mean())
         rmse = torch.sqrt(((live_common - ref_common) ** 2).mean())
         nrmse_pct = (rmse / (ref_rms + eps) * 100.0).item()
-        max_rel_pct = (diff.max() / (ref_common.abs().max() + eps) * 100.0).item()
+        max_diff = diff.max()
+        mean_diff = diff.mean()
+        max_rel_pct = (max_diff / (ref_common.abs().max() + eps) * 100.0).item()
         first_window = min(15, common_frames)
         tail_window = min(15, common_frames)
         first_diff = diff[:, :first_window]
@@ -1285,18 +1327,32 @@ class DecodingTask:
         tail_max = tail_diff.max().item()
         first_max_rel_pct = (first_diff.max() / (first_ref.abs().max() + eps) * 100.0).item()
         tail_max_rel_pct = (tail_diff.max() / (tail_ref.abs().max() + eps) * 100.0).item()
+        audio_end = self.encoder_cache_state.next_frame * 0.02
+        self.encoder_cache_diagnostic_samples.append(
+            {
+                "audio_end": audio_end,
+                "max": max_diff.item(),
+                "mean": mean_diff.item(),
+                "nrmse_pct": nrmse_pct,
+                "max_rel_pct": max_rel_pct,
+                f"first{first_window}_max": first_max,
+                f"first{first_window}_max_rel_pct": first_max_rel_pct,
+                f"tail{tail_window}_max": tail_max,
+                f"tail{tail_window}_max_rel_pct": tail_max_rel_pct,
+            }
+        )
         print(
             "[encoder-cache] "
             f"frame={self.frame_counter} "
-            f"audio_end={self.encoder_cache_state.next_frame * 0.02:.2f}s "
+            f"audio_end={audio_end:.2f}s "
             f"cache_start={self.encoder_cache_state.cache_start_frame * 0.02:.2f}s "
             f"cached={self.encoder_cache_state.cached_frames}f "
             f"pruned={self.last_encoder_cache_prune}f "
             f"overlap={self.last_encoder_cache_overlap}f "
             f"live_shape={tuple(live_features.shape)} "
             f"ref_shape={tuple(reference_features.shape)} "
-            f"max={diff.max().item():.6g} "
-            f"mean={diff.mean().item():.6g} "
+            f"max={max_diff.item():.6g} "
+            f"mean={mean_diff.item():.6g} "
             f"nrmse_pct={nrmse_pct:.6g}% "
             f"max_rel_pct={max_rel_pct:.6g}% "
             f"first{first_window}_max={first_max:.6g} "
@@ -1304,6 +1360,12 @@ class DecodingTask:
             f"tail{tail_window}_max={tail_max:.6g} "
             f"tail{tail_window}_max_rel_pct={tail_max_rel_pct:.6g}%"
         )
+
+    def print_encoder_cache_diagnostics_summary(self):
+        if not self.options.encoder_cache_diagnostics:
+            return
+        for line in encoder_cache_diagnostics_summary_lines(self.encoder_cache_diagnostic_samples):
+            print(line)
 
     def _trim_sliding_mel(self):
         if not self.options.use_sliding_encoder_cache or self.mel is None:

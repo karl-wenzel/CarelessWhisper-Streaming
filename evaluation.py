@@ -19,6 +19,7 @@ from careless_whisper_stream.normalizers import (
     EnglishTextNormalizer,
     GermanTextNormalizer,
 )
+from careless_whisper_stream.streaming_decoding import encoder_cache_diagnostics_summary_lines
 from careless_whisper_stream.streaming_transcribe import transcribe
 from training_code.ds_dict import ds_paths
 from evaluation_caching import (
@@ -900,6 +901,7 @@ def evaluate():
     total_processing_time_sec = 0.0
     predictions, references = [], []
     strict_predictions_by_k = {strict_k: [] for strict_k in strict_k_values}
+    encoder_cache_diagnostic_samples = []
 
     cached_samples = cached_run.get("samples", []) if cached_run is not None else []
     cache_samples_to_save = []
@@ -945,6 +947,7 @@ def evaluate():
                 disable_encoder_kv_cache=args.disable_encoder_kv_cache,
                 encoder_cache_diagnostics=args.encoder_cache_diagnostics,
                 encoder_cache_diagnostic_interval=args.encoder_cache_diagnostic_interval,
+                print_encoder_cache_diagnostics_summary=False,
                 reset_decoder_on_encoder_slide=args.reset_decoder_on_encoder_slide,
                 decoder_roll_overlap_seconds=args.decoder_roll_overlap_seconds,
                 decoder_roll_min_interval_seconds=args.decoder_roll_min_interval_seconds,
@@ -954,6 +957,10 @@ def evaluate():
                 max_sec_context=args.max_sec_context,
                 verbose=False
             )
+            if args.encoder_cache_diagnostics:
+                encoder_cache_diagnostic_samples.extend(
+                    getattr(model, "last_encoder_cache_diagnostic_samples", [])
+                )
             cache_samples_to_save.append(
                 sample_cache_record(
                     sample_index=sample_index,
@@ -1169,6 +1176,11 @@ def evaluate():
         print()
         print("=== Time-Binned Interval WER ===")
         print(time_bin_wer_summary.replace(" | ", "\n") if time_bin_wer_summary else "No time-bin WER entries collected.")
+    if args.encoder_cache_diagnostics:
+        print()
+        print("=== Encoder Cache Diagnostics Summary ===")
+        for line in encoder_cache_diagnostics_summary_lines(encoder_cache_diagnostic_samples):
+            print(line)
     print()
     print_latest_rows(evaluation_file, row_count=1)
 

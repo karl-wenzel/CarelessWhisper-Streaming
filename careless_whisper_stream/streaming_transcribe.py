@@ -53,6 +53,7 @@ def transcribe(
     disable_encoder_kv_cache: bool = False,
     encoder_cache_diagnostics: bool = False,
     encoder_cache_diagnostic_interval: int = 1,
+    print_encoder_cache_diagnostics_summary: bool = True,
     reset_decoder_on_encoder_slide: bool = False,
     decoder_roll_overlap_seconds: float = 5.0,
     decoder_roll_min_interval_seconds: float = 2.0,
@@ -82,6 +83,7 @@ def transcribe(
     and the processing_time field.
     """
     model.reset(use_stream=True) # we first reset the model before starting a stream, cleaning any cache.
+    model.last_encoder_cache_diagnostic_samples = []
     model.eval()
     
     # Instantiate streaming instance and open a stream
@@ -199,6 +201,15 @@ def transcribe(
 
     except KeyboardInterrupt:
         stream_instance.close_stream(frames)
+
+    decoding_task = getattr(model, "decoding_task", None)
+    if decoding_task is not None:
+        model.last_encoder_cache_diagnostic_samples = [
+            dict(sample)
+            for sample in decoding_task.encoder_cache_diagnostic_samples
+        ]
+        if print_encoder_cache_diagnostics_summary:
+            decoding_task.print_encoder_cache_diagnostics_summary()
     
     if (verbose):
         print("Finished capturing audio.")
