@@ -15,7 +15,7 @@ from .audio import (
     SpectrogramStream,
     MyStream
 )
-from .streaming_decoding import DecodingOptions
+from .streaming_decoding import DecodingOptions, encoder_cache_diagnostics_summary_lines
 
 if TYPE_CHECKING:
     from .streaming_model import StreamingWhisper
@@ -140,9 +140,21 @@ def transcribe(
 
     texts = []
     times = []
+    encoder_cache_diagnostic_samples = []
     reset_len = (max_sec_context) * SAMPLE_RATE + 360 # 360 is for the mel padding
     chunk_samples = stream_instance.chunk_size
     full_text = ""
+    encoder_cache_diagnostic_time_offset = 0.0
+
+    def collect_encoder_cache_diagnostic_samples():
+        decoding_task = getattr(model, "decoding_task", None)
+        if decoding_task is None:
+            return
+        for sample in decoding_task.encoder_cache_diagnostic_samples:
+            adjusted_sample = dict(sample)
+            adjusted_sample["audio_end"] += encoder_cache_diagnostic_time_offset
+            encoder_cache_diagnostic_samples.append(adjusted_sample)
+
     try:
         stream_iter = iter(stream_instance.read())
         try:
@@ -162,6 +174,8 @@ def transcribe(
             # Legacy mode resets at max context; sliding cache mode keeps this
             # stream alive and lets DecodingTask prune encoder-side state.
             if (not use_sliding_encoder_cache) and len(frames) >= reset_len:
+                collect_encoder_cache_diagnostic_samples()
+                encoder_cache_diagnostic_time_offset += max_sec_context
                 frame = np.concatenate((frames[-360:], frame))
                 frames = []
                 frames.extend(frame.tolist())
@@ -202,14 +216,11 @@ def transcribe(
     except KeyboardInterrupt:
         stream_instance.close_stream(frames)
 
-    decoding_task = getattr(model, "decoding_task", None)
-    if decoding_task is not None:
-        model.last_encoder_cache_diagnostic_samples = [
-            dict(sample)
-            for sample in decoding_task.encoder_cache_diagnostic_samples
-        ]
-        if print_encoder_cache_diagnostics_summary:
-            decoding_task.print_encoder_cache_diagnostics_summary()
+    collect_encoder_cache_diagnostic_samples()
+    model.last_encoder_cache_diagnostic_samples = encoder_cache_diagnostic_samples
+    if encoder_cache_diagnostics and print_encoder_cache_diagnostics_summary:
+        for line in encoder_cache_diagnostics_summary_lines(encoder_cache_diagnostic_samples):
+            print(line)
     
     if (verbose):
         print("Finished capturing audio.")
@@ -253,7 +264,7 @@ def cli():
     parser.add_argument("--max_sec_context", type=int, default=30, help="Max context window size in seconds")
     parser.add_argument("--use_sliding_encoder_cache", action="store_true", help="Slide encoder KV cache instead of resetting at max context")
     parser.add_argument("--disable_encoder_kv_cache", action="store_true", help="Recompute full encoder prefix instead of using encoder KV cache")
-    parser.add_argument("--encoder_cache_diagnostics", action="store_true", help="Print sliding encoder cache vs retained-window recompute diff stats")
+    parser.add_argument("--encoder_cache_diagnostics", action="store_true", help="Print encoder cache vs recomputed-reference diff stats")
     parser.add_argument("--encoder_cache_diagnostic_interval", type=int, default=1, help="Print encoder cache diagnostics every N decode chunks")
     parser.add_argument("--reset_decoder_on_encoder_slide", action="store_true", help="Roll decoder prefix tokens into prompt as sliding encoder cache prunes old audio")
     parser.add_argument("--decoder_roll_overlap_seconds", type=float, default=5.0, help="Seconds of retained encoder audio kept before the active decoder prefix")
@@ -279,4 +290,3 @@ def cli():
 
 if __name__ == "__main__":
     cli()
-

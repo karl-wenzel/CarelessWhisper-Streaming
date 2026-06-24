@@ -121,8 +121,8 @@ def encoder_cache_diagnostics_summary_lines(samples: list[dict[str, float]]) -> 
         if key != "audio_end"
     ]
     buckets = [
-        ("all", lambda sample: True),
-        (">30s", lambda sample: sample["audio_end"] > 30.0),
+        ("0-30s", lambda sample: sample["audio_end"] <= 30.0),
+        ("30-50s", lambda sample: 30.0 < sample["audio_end"] <= 50.0),
         (">50s", lambda sample: sample["audio_end"] > 50.0),
     ]
     lines = []
@@ -1078,8 +1078,6 @@ class DecodingTask:
                 raise ValueError("use_sliding_encoder_cache requires an ALiBi encoder positional mode")
             if not options.single_frame_mel:
                 raise ValueError("use_sliding_encoder_cache requires single_frame_mel=True")
-        if options.encoder_cache_diagnostics and not options.use_sliding_encoder_cache:
-            raise ValueError("encoder_cache_diagnostics requires use_sliding_encoder_cache")
         if options.encoder_cache_diagnostic_interval <= 0:
             raise ValueError("encoder_cache_diagnostic_interval must be positive")
         if options.reset_decoder_on_encoder_slide and not options.use_sliding_encoder_cache:
@@ -1259,10 +1257,14 @@ class DecodingTask:
         end_index = start_index + audio_features.shape[1]
         self.audio_features[:, start_index:end_index] = audio_features
 
-    def _encoder_reference_features_for_retained_window(self) -> Tensor:
-        retained_encoder_frames = self.encoder_cache_state.cached_frames
-        retained_mel_frames = retained_encoder_frames * 2
-        mel_window = self.mel[..., -retained_mel_frames:]
+    def _encoder_reference_features_for_diagnostics(self) -> Tensor:
+        if self.options.use_sliding_encoder_cache:
+            reference_encoder_frames = self.encoder_cache_state.cached_frames
+            reference_mel_frames = reference_encoder_frames * 2
+            mel_window = self.mel[..., -reference_mel_frames:]
+        else:
+            reference_encoder_frames = self.encoder_cache_state.cached_frames
+            mel_window = self.mel
 
         was_stream = self.model.encoder.use_stream
         was_mask = self.model.encoder.use_mask
@@ -1276,7 +1278,7 @@ class DecodingTask:
             self.model.encoder._use_mask(True)
             return self.model.encoder(
                 mel_window,
-                index=[0, retained_encoder_frames],
+                index=[0, reference_encoder_frames],
                 mask=True,
             ).detach()
         finally:
@@ -1290,7 +1292,9 @@ class DecodingTask:
     def _maybe_print_encoder_cache_diagnostics(self):
         if not self.options.encoder_cache_diagnostics:
             return
-        if not self.options.use_sliding_encoder_cache:
+        if self.options.disable_encoder_kv_cache:
+            if self.frame_counter % self.options.encoder_cache_diagnostic_interval == 0:
+                print("[encoder-cache] diagnostics skipped: encoder KV cache is disabled")
             return
         if self.options.use_ca_kv_cache:
             if self.frame_counter % self.options.encoder_cache_diagnostic_interval == 0:
@@ -1301,14 +1305,23 @@ class DecodingTask:
         if self.audio_features.shape[1] <= 0 or self.encoder_cache_state.cached_frames <= 0:
             return
 
-        reference_features = self._encoder_reference_features_for_retained_window()
+        reference_features = self._encoder_reference_features_for_diagnostics()
         live_features = self.audio_features.detach()
-        common_frames = min(live_features.shape[1], reference_features.shape[1])
+        live_compare_features = (
+            live_features
+            if self.options.use_sliding_encoder_cache
+            else live_features[:, :reference_features.shape[1]]
+        )
+        common_frames = min(live_compare_features.shape[1], reference_features.shape[1])
         if common_frames <= 0:
             return
 
-        live_common = live_features[:, -common_frames:].float()
-        ref_common = reference_features[:, -common_frames:].float()
+        if self.options.use_sliding_encoder_cache:
+            live_common = live_compare_features[:, -common_frames:].float()
+            ref_common = reference_features[:, -common_frames:].float()
+        else:
+            live_common = live_compare_features[:, :common_frames].float()
+            ref_common = reference_features[:, :common_frames].float()
         diff = (live_common - ref_common).abs()
         eps = 1e-8
         ref_rms = torch.sqrt((ref_common ** 2).mean())
@@ -2010,4 +2023,3 @@ def decode(
     
     result = DecodingTask(model, options).run(mel)    
     return result
-
