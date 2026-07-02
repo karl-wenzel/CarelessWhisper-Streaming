@@ -738,6 +738,7 @@ def evaluate():
     parser.add_argument("--time_bin_seconds", type=float, default=5.0, help="Bin size in seconds for --time_bin_wer.")
     parser.add_argument("-verbose", action="store_true", help="Prints additional info while evaluating")
     parser.add_argument("-cw", action="store_true", help="Uses a CW whisper base model instead of a local model.")
+    parser.add_argument("--force_hf_download", action="store_true", help="When used with -cw, force Hugging Face to download the CW model instead of reusing the local HF cache.")
     parser.add_argument("--no_evaluation_cache", action="store_true", help="Always recalculate transcribe outputs instead of reading the evaluation cache.")
 
     # Dataset Setup
@@ -766,6 +767,8 @@ def evaluate():
         raise ValueError("--decoder_roll_max_prefix_tokens must be positive.")
     if args.decoder_token_time_lag_seconds < 0:
         raise ValueError("--decoder_token_time_lag_seconds must be non-negative.")
+    if args.force_hf_download and not args.cw:
+        raise ValueError("--force_hf_download can only be used with -cw.")
 
     if not args.cw:
         ckpt_path = _resolve_checkpoint_path(args.model, args.checkpoint)
@@ -849,6 +852,10 @@ def evaluate():
     cached_run = None
     if args.no_evaluation_cache:
         print("Evaluation cache bypassed by --no_evaluation_cache; transcribe outputs will be recalculated.")
+    elif args.force_hf_download:
+        # Requirement: --force_hf_download must actually reload the CW model from
+        # Hugging Face. A cached evaluation run would skip model loading entirely.
+        print("Evaluation cache bypassed by --force_hf_download; CW model will be freshly downloaded from Hugging Face.")
     elif args.encoder_cache_diagnostics:
         print("Evaluation cache bypassed by --encoder_cache_diagnostics; transcribe outputs will be recalculated for diagnostic logging.")
     elif args.decoder_roll_diagnostics:
@@ -878,6 +885,7 @@ def evaluate():
             device=args.device,
             local_ckpt_path=None if args.cw else str(ckpt_path),
             encoder_positional_mode=encoder_positional_mode,
+            force_hf_download=args.force_hf_download,
         )
         model.eval()
 

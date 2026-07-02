@@ -53,7 +53,7 @@ EVALUATION_ONLY_PARAMETER_NAMES = [
     "decoder_roll_diagnostics",
     "verbose",
 ]
-CACHE_CONTROL_PARAMETER_NAMES = ["no_evaluation_cache"]
+CACHE_CONTROL_PARAMETER_NAMES = ["no_evaluation_cache", "force_hf_download"]
 
 TRANSCRIBE_RESULT_CACHE_FIELDS = [
     "text",

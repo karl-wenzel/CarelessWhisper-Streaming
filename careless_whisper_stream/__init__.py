@@ -320,6 +320,7 @@ def load_streaming_model(
     device: Optional[Union[str, torch.device]] = None,
     local_ckpt_path: Optional[str] = None,
     encoder_positional_mode: Optional[str] = None,
+    force_hf_download: bool = False,
 ) -> StreamingWhisper:   
     
     if local_ckpt_path is not None:
@@ -336,7 +337,8 @@ def load_streaming_model(
                 repo_id="MLSpeech/CarelessWhisper-Streaming", 
                 filename=_STREAMING_MODELS_HF[name][subname], 
                 repo_type="model", 
-                token=True
+                token=True,
+                force_download=force_hf_download,
             )
             print(f"Downloaded model from Hugging Face hub to: {ckpt_path}")
         except KeyError:
