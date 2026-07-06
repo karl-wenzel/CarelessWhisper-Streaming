@@ -627,7 +627,9 @@ def _offline_whisper_transcribe_result(model, wav_path: str, row_language: str |
         language=row_language,
         beam_size=beam_size,
         temperature=0,
-        verbose=False,
+        # Offline Whisper shows an internal progress bar when verbose=False.
+        # Use None so evaluation keeps only the outer per-dataset tqdm.
+        verbose=None,
     )
     processing_time = time.perf_counter() - start_time
     text = str(result.get("text", "") or "").strip()
