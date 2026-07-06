@@ -186,6 +186,35 @@ def _save_untrained_checkpoint(model: LoRAStreamedWhisper, check_output_dir: str
     return save_path
 
 
+def _as_loggable_scalar(value):
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu().item()
+    return value
+
+
+def _log_baseline_validation_metrics(wandblogger: WandbLogger, validation_results: list[dict], cfg: Config) -> None:
+    if cfg.no_logger or not validation_results:
+        return
+
+    metrics = validation_results[0]
+    baseline_metrics = {}
+
+    for metric_name, metric_value in metrics.items():
+        if not metric_name.startswith("val/"):
+            continue
+
+        baseline_name = "baseline/" + metric_name.removeprefix("val/")
+        baseline_metrics[baseline_name] = _as_loggable_scalar(metric_value)
+
+    if not baseline_metrics:
+        return
+
+    # Requirement: the explicit pre-training validation should be visible in
+    # W&B without being confused with Lightning's post-epoch-0 validation.
+    baseline_metrics["epoch"] = -1
+    wandblogger.experiment.log(baseline_metrics)
+
+
 def train_model(log_output_dir, check_output_dir, model_name, train_set, val_set, train_name, project_name, cfg: Config) -> None:
     Path(log_output_dir).mkdir(exist_ok=True)
     Path(check_output_dir).mkdir(exist_ok=True)
@@ -271,11 +300,13 @@ def train_model(log_output_dir, check_output_dir, model_name, train_set, val_set
     # True resume has priority over warmstart
     if cfg.ckpt is None:
         print("Running full validation before training...")
-        trainer.validate(model)
+        validation_results = trainer.validate(model)
+        _log_baseline_validation_metrics(wandblogger, validation_results, cfg)
         trainer.fit(model)
     else:
         print("Running full validation before resumed training...")
-        trainer.validate(model, ckpt_path=cfg.ckpt)
+        validation_results = trainer.validate(model, ckpt_path=cfg.ckpt)
+        _log_baseline_validation_metrics(wandblogger, validation_results, cfg)
         trainer.fit(model, ckpt_path=cfg.ckpt)
 
 
