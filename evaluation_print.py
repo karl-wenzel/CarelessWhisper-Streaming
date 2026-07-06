@@ -37,6 +37,17 @@ def _fmt_latency_ms(value) -> str:
     return f"{_to_float(value):.1f} ms"
 
 
+def _is_blank(value) -> bool:
+    return str(value or "").strip() == ""
+
+
+def _evaluation_mode(row: dict) -> str:
+    explicit_mode = str(row.get("evaluation_mode", "") or "").strip()
+    if explicit_mode:
+        return explicit_mode
+    return "cw" if str(row.get("is_cw_model", "")).lower() == "true" else "local"
+
+
 def _format_wir_display(row: dict) -> str:
     wir_summary = str(row.get("wir_summary", "") or "").strip()
     if wir_summary:
@@ -56,6 +67,9 @@ def _format_strict_display(row: dict) -> str:
 
 def _format_row(row: dict) -> str:
     lines = []
+    evaluation_mode = _evaluation_mode(row)
+    is_offline_whisper = evaluation_mode == "offline_whisper"
+
     lines.append("=" * 30)
     lines.append("RESULTS FOR:")
     lines.append(f"MODEL: {row.get('model_name', '')} on DATASET: {row.get('dataset', '')}")
@@ -68,29 +82,31 @@ def _format_row(row: dict) -> str:
         lines.append(f"CHECKPOINT:    {checkpoint}")
 
     lines.append(f"BASE MODEL:    {row.get('base_model_name', '')}")
-    lines.append(f"CHUNK SIZE:    {row.get('chunk_size', '')}")
-    if "max_sec_context" in row and row.get("max_sec_context", "") != "":
+    if not _is_blank(row.get("chunk_size", "")):
+        lines.append(f"CHUNK SIZE:    {row.get('chunk_size', '')}")
+    if "max_sec_context" in row and not _is_blank(row.get("max_sec_context", "")):
         lines.append(f"MAX CONTEXT:   {row.get('max_sec_context', '')}s")
-    if "disable_encoder_kv_cache" in row and row.get("disable_encoder_kv_cache", "") != "":
+    if "disable_encoder_kv_cache" in row and not _is_blank(row.get("disable_encoder_kv_cache", "")):
         cache_mode = "full-prefix" if str(row.get("disable_encoder_kv_cache", "")).lower() == "true" else "kv-cache"
         lines.append(f"ENC CACHE:     {cache_mode}")
-    if "reset_decoder_on_encoder_slide" in row and row.get("reset_decoder_on_encoder_slide", "") != "":
+    if "reset_decoder_on_encoder_slide" in row and not _is_blank(row.get("reset_decoder_on_encoder_slide", "")):
         decoder_rebase = "prefix-roll" if str(row.get("reset_decoder_on_encoder_slide", "")).lower() == "true" else "continuous"
         lines.append(f"DEC RESET:     {decoder_rebase}")
-    if "decoder_roll_overlap_seconds" in row and row.get("decoder_roll_overlap_seconds", "") != "":
+    if "decoder_roll_overlap_seconds" in row and not _is_blank(row.get("decoder_roll_overlap_seconds", "")):
         lines.append(f"ROLL OVERLAP:  {row.get('decoder_roll_overlap_seconds', '')}s")
-    if "decoder_roll_min_interval_seconds" in row and row.get("decoder_roll_min_interval_seconds", "") != "":
+    if "decoder_roll_min_interval_seconds" in row and not _is_blank(row.get("decoder_roll_min_interval_seconds", "")):
         lines.append(f"ROLL MIN INT:  {row.get('decoder_roll_min_interval_seconds', '')}s")
-    if "decoder_roll_max_prefix_tokens" in row and row.get("decoder_roll_max_prefix_tokens", "") != "":
+    if "decoder_roll_max_prefix_tokens" in row and not _is_blank(row.get("decoder_roll_max_prefix_tokens", "")):
         lines.append(f"ROLL MAX PREF: {row.get('decoder_roll_max_prefix_tokens', '')} tokens")
-    if "decoder_token_time_lag_seconds" in row and row.get("decoder_token_time_lag_seconds", "") != "":
+    if "decoder_token_time_lag_seconds" in row and not _is_blank(row.get("decoder_token_time_lag_seconds", "")):
         lines.append(f"ROLL LAG:      {row.get('decoder_token_time_lag_seconds', '')}s")
-    lines.append(f"MODE:          {'cw' if str(row.get('is_cw_model', '')).lower() == 'true' else 'local'}")
+    lines.append(f"MODE:          {evaluation_mode}")
     lines.append(f"WER:           {_fmt_percent(row.get('wer'))}")
-    lines.append(f"STRICT WERs:   {_format_strict_display(row)}")
-    lines.append(
-        f"STRICT WER:    {_fmt_percent(row.get('strict_wer'))} (k={_to_int(row.get('strict_k'))})"
-    )
+    if not is_offline_whisper:
+        lines.append(f"STRICT WERs:   {_format_strict_display(row)}")
+        lines.append(
+            f"STRICT WER:    {_fmt_percent(row.get('strict_wer'))} (k={_to_int(row.get('strict_k'))})"
+        )
 
     lines.append("")
     lines.append("=== Final WER IDS Breakdown ===")
@@ -102,19 +118,20 @@ def _format_row(row: dict) -> str:
         f"Total errors:  {_to_int(row.get('wer_insertions')) + _to_int(row.get('wer_deletions')) + _to_int(row.get('wer_substitutions'))}"
     )
 
-    lines.append("")
-    lines.append("=== Final Strict WER IDS Breakdown ===")
-    lines.append(f"Insertions:    {_to_int(row.get('strict_wer_insertions'))}")
-    lines.append(f"Deletions:     {_to_int(row.get('strict_wer_deletions'))}")
-    lines.append(f"Substitutions: {_to_int(row.get('strict_wer_substitutions'))}")
-    lines.append(f"Correct:       {_to_int(row.get('strict_wer_correct'))}")
-    lines.append(
-        f"Total errors:  {_to_int(row.get('strict_wer_insertions')) + _to_int(row.get('strict_wer_deletions')) + _to_int(row.get('strict_wer_substitutions'))}"
-    )
+    if not is_offline_whisper:
+        lines.append("")
+        lines.append("=== Final Strict WER IDS Breakdown ===")
+        lines.append(f"Insertions:    {_to_int(row.get('strict_wer_insertions'))}")
+        lines.append(f"Deletions:     {_to_int(row.get('strict_wer_deletions'))}")
+        lines.append(f"Substitutions: {_to_int(row.get('strict_wer_substitutions'))}")
+        lines.append(f"Correct:       {_to_int(row.get('strict_wer_correct'))}")
+        lines.append(
+            f"Total errors:  {_to_int(row.get('strict_wer_insertions')) + _to_int(row.get('strict_wer_deletions')) + _to_int(row.get('strict_wer_substitutions'))}"
+        )
 
-    lines.append(f"RWER:          {_fmt_percent(row.get('rwer'))}")
-    lines.append(f"ARWER:         {_fmt_percent(row.get('arwer'))}")
-    lines.append(f"WIR:           {_format_wir_display(row)}")
+        lines.append(f"RWER:          {_fmt_percent(row.get('rwer'))}")
+        lines.append(f"ARWER:         {_fmt_percent(row.get('arwer'))}")
+        lines.append(f"WIR:           {_format_wir_display(row)}")
     lines.append("-" * 20)
     lines.append(f"Avg Latency:   {_fmt_latency_ms(row.get('avg_latency_ms'))}")
     lines.append(f"RTF:           {_to_float(row.get('rtf')):.4f}")

@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from typing import Any
 
 
-EVALUATION_CACHE_VERSION = 8
+EVALUATION_CACHE_VERSION = 9
 MAX_EVALUATION_CACHE_RUNS = 5
 DEFAULT_EVALUATION_FILE = Path(os.environ.get("HOME", str(Path.home()))) / "ma" / "data" / "evaluation.csv"
 
@@ -20,6 +20,7 @@ DEFAULT_EVALUATION_FILE = Path(os.environ.get("HOME", str(Path.home()))) / "ma" 
 # flags safer: every argparse option must be classified before caching runs.
 PRE_EVALUATION_PARAMETER_NAMES = [
     "model",
+    "offline_whisper",
     "checkpoint",
     "chunk_size",
     "multilingual",

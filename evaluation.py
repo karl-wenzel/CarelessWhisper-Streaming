@@ -4,6 +4,7 @@ import json
 import os
 import re
 import time
+from types import SimpleNamespace
 import pandas as pd
 import torch
 import jiwer
@@ -13,14 +14,15 @@ from pathlib import Path
 import librosa
 import numpy as np
 
-from careless_whisper_stream import load_streaming_model
+from careless_whisper_stream import load_model, load_streaming_model
 from careless_whisper_stream.normalizers import (
     BasicTextNormalizer,
     EnglishTextNormalizer,
     GermanTextNormalizer,
 )
 from careless_whisper_stream.streaming_decoding import encoder_cache_diagnostics_summary_lines
-from careless_whisper_stream.streaming_transcribe import transcribe
+from careless_whisper_stream.streaming_transcribe import transcribe as streaming_transcribe
+from careless_whisper_stream.transcribe import transcribe as offline_transcribe
 from training_code.ds_dict import ds_paths
 from evaluation_caching import (
     build_cache_identity,
@@ -275,6 +277,20 @@ def _cache_dataset_sample_records(df, csv_path: str) -> list[dict]:
             record["raw_text"] = str(row["raw_text"])
         sample_records.append(record)
     return sample_records
+
+
+def _offline_model_fingerprint(model_name: str) -> dict:
+    model_path = Path(str(model_name)).expanduser()
+    if model_path.is_file():
+        return file_fingerprint(model_path)
+    return {}
+
+
+def _offline_model_name_or_path(model_name: str) -> str:
+    model_path = Path(str(model_name)).expanduser()
+    if model_path.is_file():
+        return str(model_path)
+    return str(model_name)
 
 
 def _infer_language(
@@ -601,6 +617,28 @@ def _format_time_bin_wer_summary(time_bin_counts: dict[int, dict[str, int]], bin
     return " | ".join(summary_parts)
 
 
+def _offline_whisper_transcribe_result(model, wav_path: str, row_language: str | None, beam_size: int):
+    # Offline Whisper produces one final transcript per sample; wrap it like a
+    # one-item result list so evaluation caching can stay shared with streaming.
+    start_time = time.perf_counter()
+    result = offline_transcribe(
+        model,
+        wav_path,
+        language=row_language,
+        beam_size=beam_size,
+        temperature=0,
+        verbose=False,
+    )
+    processing_time = time.perf_counter() - start_time
+    text = str(result.get("text", "") or "").strip()
+    return SimpleNamespace(
+        text=text,
+        full_text=text,
+        processing_time=processing_time,
+        language=result.get("language", row_language or ""),
+    )
+
+
 def _hypothesis_at_or_before(results, time_sec: float, chunk_duration_sec: float, normalizer) -> str:
     if not results or time_sec <= 0:
         return ""
@@ -696,8 +734,9 @@ def evaluate():
         "--model",
         type=str,
         required=True,
-        help="Model run name under ckpt_root, e.g. the subfolder inside ckpt_root",
+        help="Model run name under ckpt_root, or an offline Whisper model name/path when --offline_whisper is used.",
     )
+    parser.add_argument("--offline_whisper", action="store_true", help="Evaluate a non-streaming Whisper model; streaming-only metrics are not measured.")
     parser.add_argument("--checkpoint", type=int, default=None, help="Checkpoint epoch number to evaluate, e.g. 7 -> checkpoint-0007")
     parser.add_argument("--chunk_size", type=int, default=300, help="Chunk size (gran)")
     parser.add_argument("--multilingual", action="store_true", help="Use multilingual model")
@@ -769,8 +808,37 @@ def evaluate():
         raise ValueError("--decoder_token_time_lag_seconds must be non-negative.")
     if args.force_hf_download and not args.cw:
         raise ValueError("--force_hf_download can only be used with -cw.")
+    if args.offline_whisper and args.cw:
+        raise ValueError("--offline_whisper cannot be combined with -cw; pass a Whisper model name/path via --model.")
+    if args.offline_whisper and args.force_hf_download:
+        raise ValueError("--force_hf_download is only supported for CarelessWhisper streaming HF checkpoints.")
+    if args.offline_whisper and args.checkpoint is not None:
+        raise ValueError("--checkpoint selects CarelessWhisper training checkpoints and cannot be used with --offline_whisper.")
+    if args.offline_whisper and args.time_bin_wer:
+        raise ValueError("--time_bin_wer is streaming-only and cannot be used with --offline_whisper.")
+    if args.offline_whisper and args.wir_n:
+        raise ValueError("--wir_n is streaming-only and cannot be used with --offline_whisper.")
+    offline_incompatible_flags = [
+        ("-sa_kv_cache", args.sa_kv_cache),
+        ("-ca_kv_cache", args.ca_kv_cache),
+        ("--use_sliding_encoder_cache", args.use_sliding_encoder_cache),
+        ("--disable_encoder_kv_cache", args.disable_encoder_kv_cache),
+        ("--encoder_cache_diagnostics", args.encoder_cache_diagnostics),
+        ("--reset_decoder_on_encoder_slide", args.reset_decoder_on_encoder_slide),
+        ("--decoder_roll_diagnostics", args.decoder_roll_diagnostics),
+    ]
+    for flag_name, enabled in offline_incompatible_flags:
+        if enabled:
+            raise ValueError(f"{flag_name} is streaming-only and cannot be used with --offline_whisper.")
 
-    if not args.cw:
+    evaluation_mode = "offline_whisper" if args.offline_whisper else "streaming"
+
+    if args.offline_whisper:
+        print(f"Using offline Whisper model: {args.model}")
+        ckpt_path = None
+        hparams = {}
+        base_model_name = args.model
+    elif not args.cw:
         ckpt_path = _resolve_checkpoint_path(args.model, args.checkpoint)
         print(f"Using checkpoint of local model: {ckpt_path}")
 
@@ -784,10 +852,14 @@ def evaluate():
         ckpt_path = None
         hparams = {}
 
-    encoder_positional_mode = _resolve_encoder_positional_mode(
-        args.encoder_positional_mode,
-        args.model,
-        hparams,
+    encoder_positional_mode = (
+        ""
+        if args.offline_whisper
+        else _resolve_encoder_positional_mode(
+            args.encoder_positional_mode,
+            args.model,
+            hparams,
+        )
     )
     default_language = _infer_language(args.dataset_name, explicit_lang=args.lang, checkpoint_cfg=hparams)
     default_normalizer = _get_normalizer(default_language)
@@ -804,9 +876,13 @@ def evaluate():
         raise ValueError("--wir_n values must be non-negative integers.")
     print(f"Evaluation language: {default_language or 'auto/basic'}")
     print(f"Default normalizer: {type(default_normalizer).__name__}")
-    print(f"Encoder positional mode: {encoder_positional_mode}")
-    print(f"Strict correction distances: {strict_k_values}")
-    print(f"WIR suffix tolerances: {wir_suffix_tolerances}")
+    print(f"Evaluation mode: {evaluation_mode}")
+    if not args.offline_whisper:
+        print(f"Encoder positional mode: {encoder_positional_mode}")
+        print(f"Strict correction distances: {strict_k_values}")
+        print(f"WIR suffix tolerances: {wir_suffix_tolerances}")
+    else:
+        print("Streaming-only metrics disabled: strict/SWER, RWER, ARWER, WIR, and time-bin WER.")
 
     # 1. Load Dataset CSV
     if args.dataset_name not in ds_paths:
@@ -831,19 +907,20 @@ def evaluate():
     cache_dir = evaluation_cache_dir(evaluation_file)
     sample_identity_records = _cache_dataset_sample_records(df, csv_path)
     resolved_cache_context = {
+        "evaluation_mode": evaluation_mode,
         "base_model_name": args.model if args.cw else base_model_name,
         "is_cw_model": bool(args.cw),
         "checkpoint": "" if ckpt_path is None else ckpt_path.name,
         "checkpoint_epoch": "" if ckpt_path is None else int(_extract_epoch_from_name(ckpt_path)),
-        "checkpoint_file": file_fingerprint(ckpt_path),
+        "checkpoint_file": _offline_model_fingerprint(args.model) if args.offline_whisper else file_fingerprint(ckpt_path),
         "dataset_csv": file_fingerprint(csv_path),
         "dataset_selection_fingerprint": dataset_selection_fingerprint(sample_identity_records),
         "default_language": default_language or "",
         "encoder_positional_mode": encoder_positional_mode,
         "transcribe_temperature": 0,
-        "transcribe_simulate_stream": True,
+        "transcribe_simulate_stream": not args.offline_whisper,
         "transcribe_verbose": False,
-        "chunk_duration_sec": float(args.chunk_size * 0.02),
+        "chunk_duration_sec": 0.0 if args.offline_whisper else float(args.chunk_size * 0.02),
     }
     evaluation_cache_key, evaluation_cache_identity = build_cache_identity(
         pre_evaluation_parameters(args),
@@ -878,15 +955,18 @@ def evaluate():
     model = None
     if cached_run is None:
         # 2. Load Model only when cached transcribe outputs are unavailable.
-        model = load_streaming_model(
-            name=args.model if args.cw else base_model_name,
-            gran=args.chunk_size,
-            multilingual=args.multilingual,
-            device=args.device,
-            local_ckpt_path=None if args.cw else str(ckpt_path),
-            encoder_positional_mode=encoder_positional_mode,
-            force_hf_download=args.force_hf_download,
-        )
+        if args.offline_whisper:
+            model = load_model(_offline_model_name_or_path(args.model), device=args.device)
+        else:
+            model = load_streaming_model(
+                name=args.model if args.cw else base_model_name,
+                gran=args.chunk_size,
+                multilingual=args.multilingual,
+                device=args.device,
+                local_ckpt_path=None if args.cw else str(ckpt_path),
+                encoder_positional_mode=encoder_positional_mode,
+                force_hf_download=args.force_hf_download,
+            )
         model.eval()
 
     global_rwer_num, global_rwer_den = 0, 0
@@ -912,11 +992,18 @@ def evaluate():
     cached_samples = cached_run.get("samples", []) if cached_run is not None else []
     cache_samples_to_save = []
     chunk_duration_sec = (
-        float(resolved_cache_context["chunk_duration_sec"])
-        if cached_run is not None
-        else model.encoder.gran * 0.02
+        0.0
+        if args.offline_whisper
+        else (
+            float(resolved_cache_context["chunk_duration_sec"])
+            if cached_run is not None
+            else model.encoder.gran * 0.02
+        )
     )
-    print(f"model chunk size (s): {chunk_duration_sec}")
+    if args.offline_whisper:
+        print("model chunk size (s): N/A (offline Whisper)")
+    else:
+        print(f"model chunk size (s): {chunk_duration_sec}")
 
     # 3. Inference Loop
     print(f"Starting evaluation on {len(df)} samples...")
@@ -925,7 +1012,7 @@ def evaluate():
         tg_path = _resolve_csv_relative_path(csv_path, row["tg_path"])
         row_language = (
             _canonicalize_language(row["lang"])
-            if args.multilingual and "lang" in row and pd.notna(row["lang"])
+            if (args.multilingual or args.offline_whisper) and "lang" in row and pd.notna(row["lang"])
             else default_language
         )
         normalizer = _get_normalizer(row_language)
@@ -939,8 +1026,32 @@ def evaluate():
         if cached_run is not None:
             cached_sample = cached_samples[sample_index]
             results = cache_records_to_results(cached_sample.get("results", []))
+            if args.offline_whisper and results:
+                p_latency = getattr(results[-1], "processing_time", 0.0)
+                all_chunk_latencies.append(p_latency)
+                total_processing_time_sec += p_latency
+        elif args.offline_whisper:
+            result = _offline_whisper_transcribe_result(
+                model=model,
+                wav_path=wav_path,
+                row_language=row_language,
+                beam_size=args.beam_size,
+            )
+            results = [result]
+            all_chunk_latencies.append(result.processing_time)
+            total_processing_time_sec += result.processing_time
+            cache_samples_to_save.append(
+                sample_cache_record(
+                    sample_index=sample_index,
+                    wav_path=wav_path,
+                    tg_path=tg_path,
+                    language=row_language,
+                    audio_duration_sec=audio_duration,
+                    results=results,
+                )
+            )
         else:
-            results = transcribe(
+            results = streaming_transcribe(
                 model=model,
                 wav_file=wav_path,
                 simulate_stream=True,
@@ -988,39 +1099,43 @@ def evaluate():
                 normalizer,
             )
 
-        for step, res in enumerate(results):
-            hyp_text = _normalize_for_eval(_result_text_for_eval(res), normalizer)
+        if not args.offline_whisper:
+            for step, res in enumerate(results):
+                hyp_text = _normalize_for_eval(_result_text_for_eval(res), normalizer)
 
-            p_latency = getattr(res, "processing_time", 0.0)
-            all_chunk_latencies.append(p_latency)
-            total_processing_time_sec += p_latency
+                p_latency = getattr(res, "processing_time", 0.0)
+                all_chunk_latencies.append(p_latency)
+                total_processing_time_sec += p_latency
 
-            audio_time_rho = (step + 1) * chunk_duration_sec
-            gt_text_rho = _normalize_for_eval(get_gt_prefix_at_time(gt_words, audio_time_rho), normalizer)
+                audio_time_rho = (step + 1) * chunk_duration_sec
+                gt_text_rho = _normalize_for_eval(get_gt_prefix_at_time(gt_words, audio_time_rho), normalizer)
 
-            i, d, s, c = calculate_idsc(gt_text_rho, hyp_text)
-            global_rwer_num += (i + d + s)
-            global_rwer_den += (c + d + s)
+                i, d, s, c = calculate_idsc(gt_text_rho, hyp_text)
+                global_rwer_num += (i + d + s)
+                global_rwer_den += (c + d + s)
 
-            real_time_tau = audio_time_rho + p_latency
-            gt_text_tau = _normalize_for_eval(get_gt_prefix_at_time(gt_words, real_time_tau), normalizer)
+                real_time_tau = audio_time_rho + p_latency
+                gt_text_tau = _normalize_for_eval(get_gt_prefix_at_time(gt_words, real_time_tau), normalizer)
 
-            i_a, d_a, s_a, c_a = calculate_idsc(gt_text_tau, hyp_text)
-            global_arwer_num += (i_a + d_a + s_a)
-            global_arwer_den += (c_a + d_a + s_a)
+                i_a, d_a, s_a, c_a = calculate_idsc(gt_text_tau, hyp_text)
+                global_arwer_num += (i_a + d_a + s_a)
+                global_arwer_den += (c_a + d_a + s_a)
 
         predicted_text = _result_text_for_eval(results[-1]) if results else ""
         normalized_prediction = _normalize_for_eval(predicted_text, normalizer)
-        strict_predictions_for_sample = {
-            strict_k: _build_strict_word_buffer(results, normalizer, strict_k)
-            for strict_k in strict_k_values
-        }
-        sample_wir_counts = {
-            suffix_tolerance: calculate_word_instability_with_suffix_tolerance(
-                results, normalizer, suffix_tolerance=suffix_tolerance
-            )
-            for suffix_tolerance in wir_suffix_tolerances
-        }
+        strict_predictions_for_sample = {}
+        sample_wir_counts = {}
+        if not args.offline_whisper:
+            strict_predictions_for_sample = {
+                strict_k: _build_strict_word_buffer(results, normalizer, strict_k)
+                for strict_k in strict_k_values
+            }
+            sample_wir_counts = {
+                suffix_tolerance: calculate_word_instability_with_suffix_tolerance(
+                    results, normalizer, suffix_tolerance=suffix_tolerance
+                )
+                for suffix_tolerance in wir_suffix_tolerances
+            }
         predictions.append(normalized_prediction)
         for strict_k, strict_prediction in strict_predictions_for_sample.items():
             strict_predictions_by_k[strict_k].append(strict_prediction)
@@ -1036,33 +1151,36 @@ def evaluate():
         global_wer_s += s_f
         global_wer_c += c_f
 
-        for strict_k, strict_prediction in strict_predictions_for_sample.items():
-            i_strict, d_strict, s_strict, c_strict = calculate_idsc(reference_text, strict_prediction)
-            global_strict_counts[strict_k]["i"] += i_strict
-            global_strict_counts[strict_k]["d"] += d_strict
-            global_strict_counts[strict_k]["s"] += s_strict
-            global_strict_counts[strict_k]["c"] += c_strict
+        if not args.offline_whisper:
+            for strict_k, strict_prediction in strict_predictions_for_sample.items():
+                i_strict, d_strict, s_strict, c_strict = calculate_idsc(reference_text, strict_prediction)
+                global_strict_counts[strict_k]["i"] += i_strict
+                global_strict_counts[strict_k]["d"] += d_strict
+                global_strict_counts[strict_k]["s"] += s_strict
+                global_strict_counts[strict_k]["c"] += c_strict
 
         if args.verbose:
             print("\n".join(_reference_debug_lines(wav_path, tg_path, row, gt_words, normalizer, audio_duration)))
             print("Pred: " + normalized_prediction)
-            print(
-                "Strict Preds: "
-                + " | ".join(
-                    f"k={strict_k}: {strict_predictions_for_sample[strict_k]}"
-                    for strict_k in strict_k_values
+            if not args.offline_whisper:
+                print(
+                    "Strict Preds: "
+                    + " | ".join(
+                        f"k={strict_k}: {strict_predictions_for_sample[strict_k]}"
+                        for strict_k in strict_k_values
+                    )
                 )
-            )
             print("Label:" + reference_text)
             print(f"I={i_f}, D={d_f}, S={s_f}, C={c_f}")
-            print(
-                "WIR: "
-                + ", ".join(
-                    f"n={suffix_tolerance} changes={sample_wir_counts[suffix_tolerance][0]} "
-                    f"total_words={sample_wir_counts[suffix_tolerance][1]}"
-                    for suffix_tolerance in wir_suffix_tolerances
+            if not args.offline_whisper:
+                print(
+                    "WIR: "
+                    + ", ".join(
+                        f"n={suffix_tolerance} changes={sample_wir_counts[suffix_tolerance][0]} "
+                        f"total_words={sample_wir_counts[suffix_tolerance][1]}"
+                        for suffix_tolerance in wir_suffix_tolerances
+                    )
                 )
-            )
             print("-" * 30)
 
     evaluation_cache_used = cached_run is not None
@@ -1079,27 +1197,40 @@ def evaluate():
 
     # 4. Final Aggregated Metric Calculation
     wer = jiwer.wer(references, predictions) if references else 0
-    strict_wer_by_k = {
-        strict_k: jiwer.wer(references, strict_predictions_by_k[strict_k]) if references else 0
-        for strict_k in strict_k_values
-    }
-    # Keep legacy strict_* columns tied to one primary k for backward-compatible CSV consumers.
-    primary_strict_k = strict_k_values[0]
-    primary_strict_counts = global_strict_counts[primary_strict_k]
-    strict_wer = strict_wer_by_k[primary_strict_k]
-    strict_summary = _format_strict_summary(strict_wer_by_k, global_strict_counts)
-    rwer = global_rwer_num / global_rwer_den if global_rwer_den > 0 else 0
-    arwer = global_arwer_num / global_arwer_den if global_arwer_den > 0 else 0
-    wir_stats_by_n = {}
-    for suffix_tolerance, counts in global_wir_counts.items():
-        total_words = counts["total_words"]
-        changed_words = counts["changed_words"]
-        wir_stats_by_n[suffix_tolerance] = {
-            "changed_words": int(changed_words),
-            "total_words": int(total_words),
-            "wir": float(changed_words / total_words if total_words > 0 else 0),
+    if args.offline_whisper:
+        # Offline baselines have no incremental hypotheses, so SWER/strict WER,
+        # RWER, ARWER, and WIR are intentionally recorded as blank CSV fields.
+        strict_wer_by_k = {}
+        primary_strict_k = None
+        primary_strict_counts = {"i": None, "d": None, "s": None, "c": None}
+        strict_wer = None
+        strict_summary = ""
+        rwer = None
+        arwer = None
+        wir_stats_by_n = {}
+        wir = None
+    else:
+        strict_wer_by_k = {
+            strict_k: jiwer.wer(references, strict_predictions_by_k[strict_k]) if references else 0
+            for strict_k in strict_k_values
         }
-    wir = wir_stats_by_n[0]["wir"]
+        # Keep legacy strict_* columns tied to one primary k for backward-compatible CSV consumers.
+        primary_strict_k = strict_k_values[0]
+        primary_strict_counts = global_strict_counts[primary_strict_k]
+        strict_wer = strict_wer_by_k[primary_strict_k]
+        strict_summary = _format_strict_summary(strict_wer_by_k, global_strict_counts)
+        rwer = global_rwer_num / global_rwer_den if global_rwer_den > 0 else 0
+        arwer = global_arwer_num / global_arwer_den if global_arwer_den > 0 else 0
+        wir_stats_by_n = {}
+        for suffix_tolerance, counts in global_wir_counts.items():
+            total_words = counts["total_words"]
+            changed_words = counts["changed_words"]
+            wir_stats_by_n[suffix_tolerance] = {
+                "changed_words": int(changed_words),
+                "total_words": int(total_words),
+                "wir": float(changed_words / total_words if total_words > 0 else 0),
+            }
+        wir = wir_stats_by_n[0]["wir"]
     time_bin_wer_summary = (
         _format_time_bin_wer_summary(time_bin_counts, args.time_bin_seconds)
         if args.time_bin_wer
@@ -1112,6 +1243,7 @@ def evaluate():
     stats = {
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "evaluation_file": evaluation_file,
+        "evaluation_mode": evaluation_mode,
         "model_name": args.model,
         "model_run": args.model,
         "base_model_name": args.model if args.cw else base_model_name,
@@ -1125,37 +1257,37 @@ def evaluate():
         "fraction": float(args.dataset_fraction),
         "requested_sample_count": "" if args.dataset_sample_count is None else int(args.dataset_sample_count),
         "sample_count": int(len(df)),
-        "chunk_size": int(args.chunk_size),
-        "chunk_duration_sec": float(chunk_duration_sec),
-        "max_sec_context": int(args.max_sec_context),
+        "chunk_size": "" if args.offline_whisper else int(args.chunk_size),
+        "chunk_duration_sec": "" if args.offline_whisper else float(chunk_duration_sec),
+        "max_sec_context": "" if args.offline_whisper else int(args.max_sec_context),
         "beam_size": int(args.beam_size),
-        "strict_k": int(primary_strict_k),
-        "strict_k_values": " ".join(str(k) for k in strict_k_values),
+        "strict_k": primary_strict_k,
+        "strict_k_values": "" if args.offline_whisper else " ".join(str(k) for k in strict_k_values),
         "strict_summary": strict_summary,
         "language": default_language or "",
         "multilingual": bool(args.multilingual),
         "encoder_positional_mode": encoder_positional_mode,
         "device": args.device,
-        "sa_kv_cache": bool(args.sa_kv_cache),
-        "ca_kv_cache": bool(args.ca_kv_cache),
-        "use_sliding_encoder_cache": bool(args.use_sliding_encoder_cache),
-        "disable_encoder_kv_cache": bool(args.disable_encoder_kv_cache),
-        "encoder_cache_diagnostics": bool(args.encoder_cache_diagnostics),
-        "encoder_cache_diagnostic_interval": int(args.encoder_cache_diagnostic_interval),
-        "reset_decoder_on_encoder_slide": bool(args.reset_decoder_on_encoder_slide),
-        "decoder_roll_overlap_seconds": float(args.decoder_roll_overlap_seconds),
-        "decoder_roll_min_interval_seconds": float(args.decoder_roll_min_interval_seconds),
-        "decoder_roll_max_prefix_tokens": int(args.decoder_roll_max_prefix_tokens),
-        "decoder_token_time_lag_seconds": float(args.decoder_token_time_lag_seconds),
+        "sa_kv_cache": "" if args.offline_whisper else bool(args.sa_kv_cache),
+        "ca_kv_cache": "" if args.offline_whisper else bool(args.ca_kv_cache),
+        "use_sliding_encoder_cache": "" if args.offline_whisper else bool(args.use_sliding_encoder_cache),
+        "disable_encoder_kv_cache": "" if args.offline_whisper else bool(args.disable_encoder_kv_cache),
+        "encoder_cache_diagnostics": "" if args.offline_whisper else bool(args.encoder_cache_diagnostics),
+        "encoder_cache_diagnostic_interval": "" if args.offline_whisper else int(args.encoder_cache_diagnostic_interval),
+        "reset_decoder_on_encoder_slide": "" if args.offline_whisper else bool(args.reset_decoder_on_encoder_slide),
+        "decoder_roll_overlap_seconds": "" if args.offline_whisper else float(args.decoder_roll_overlap_seconds),
+        "decoder_roll_min_interval_seconds": "" if args.offline_whisper else float(args.decoder_roll_min_interval_seconds),
+        "decoder_roll_max_prefix_tokens": "" if args.offline_whisper else int(args.decoder_roll_max_prefix_tokens),
+        "decoder_token_time_lag_seconds": "" if args.offline_whisper else float(args.decoder_token_time_lag_seconds),
         "wer": float(wer),
-        "strict_wer": float(strict_wer),
-        "rwer": float(rwer),
-        "arwer": float(arwer),
-        "wir": float(wir),
-        "wir_changed_words": int(wir_stats_by_n[0]["changed_words"]),
-        "wir_total_words": int(wir_stats_by_n[0]["total_words"]),
-        "wir_n_values": " ".join(str(n) for n in wir_suffix_tolerances),
-        "wir_summary": _format_wir_summary(wir_stats_by_n),
+        "strict_wer": strict_wer,
+        "rwer": rwer,
+        "arwer": arwer,
+        "wir": wir,
+        "wir_changed_words": "" if args.offline_whisper else int(wir_stats_by_n[0]["changed_words"]),
+        "wir_total_words": "" if args.offline_whisper else int(wir_stats_by_n[0]["total_words"]),
+        "wir_n_values": "" if args.offline_whisper else " ".join(str(n) for n in wir_suffix_tolerances),
+        "wir_summary": "" if args.offline_whisper else _format_wir_summary(wir_stats_by_n),
         "time_bin_wer_enabled": bool(args.time_bin_wer),
         "time_bin_seconds": float(args.time_bin_seconds),
         "time_bin_wer_summary": time_bin_wer_summary,
@@ -1163,10 +1295,10 @@ def evaluate():
         "wer_deletions": int(global_wer_d),
         "wer_substitutions": int(global_wer_s),
         "wer_correct": int(global_wer_c),
-        "strict_wer_insertions": int(primary_strict_counts["i"]),
-        "strict_wer_deletions": int(primary_strict_counts["d"]),
-        "strict_wer_substitutions": int(primary_strict_counts["s"]),
-        "strict_wer_correct": int(primary_strict_counts["c"]),
+        "strict_wer_insertions": primary_strict_counts["i"],
+        "strict_wer_deletions": primary_strict_counts["d"],
+        "strict_wer_substitutions": primary_strict_counts["s"],
+        "strict_wer_correct": primary_strict_counts["c"],
         "avg_latency_ms": float(avg_latency * 1000),
         "rtf": float(rtf),
         "total_audio_duration_sec": float(total_audio_duration_sec),
