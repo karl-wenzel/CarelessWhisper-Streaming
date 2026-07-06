@@ -171,6 +171,12 @@ def main():
     parser.add_argument("folder")
     parser.add_argument("-multiple", action="store_true")
     parser.add_argument(
+        "--output_folder",
+        "--output_dir",
+        default=None,
+        help="folder where statistics outputs will be written (default: <folder>/statistics)",
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=DEFAULT_WORKERS,
@@ -181,7 +187,11 @@ def main():
 
     base_folder = os.path.abspath(args.folder)
 
-    stats_dir = os.path.join(base_folder, "statistics")
+    stats_dir = (
+        os.path.abspath(args.output_folder)
+        if args.output_folder
+        else os.path.join(base_folder, "statistics")
+    )
     os.makedirs(stats_dir, exist_ok=True)
 
     output = {}
