@@ -226,6 +226,8 @@ def load_streaming_model_for_train(
     cache_gran: bool = True,
     gran: int = 15, 
     rank: int = 8,
+    encoder_rank: Optional[int] = None,
+    decoder_rank: Optional[int] = None,
     extra_gran_blocks: int = 0,
     encoder_positional_mode: Optional[str] = None,
     n_advisor_class: int = 4,
@@ -299,6 +301,8 @@ def load_streaming_model_for_train(
                              cache_gran=cache_gran, 
                              gran=gran, 
                              rank=rank, 
+                             encoder_rank=encoder_rank,
+                             decoder_rank=decoder_rank,
                              extra_gran_blocks=extra_gran_blocks,
                              encoder_positional_mode=m_encoder_positional_mode)
 
@@ -352,6 +356,8 @@ def load_streaming_model(
     m_gran = _get_hparam(checkpoint, "enc_emb_gran", _get_hparam(checkpoint, "gran", gran))
     m_extra = _get_hparam(checkpoint, "enc_context", _get_hparam(checkpoint, "extra_gran_blocks", 0))
     m_rank = _get_hparam(checkpoint, "rank", 32)
+    m_encoder_rank = _get_hparam(checkpoint, "encoder_rank", m_rank)
+    m_decoder_rank = _get_hparam(checkpoint, "decoder_rank", m_rank)
     m_encoder_positional_mode = encoder_positional_mode or _get_hparam(
         checkpoint,
         "encoder_positional_mode",
@@ -363,12 +369,19 @@ def load_streaming_model(
     else:
         dims = ModelDimensions(**checkpoint.get("cfg", {}).get("dims", {}))
 
-    print(f"Final Model Params -> Granule: {m_gran}, Extra Blocks: {m_extra}, Rank: {m_rank}, Encoder Positions: {m_encoder_positional_mode}")
+    print(
+        "Final Model Params -> "
+        f"Granule: {m_gran}, Extra Blocks: {m_extra}, Rank: {m_rank}, "
+        f"Encoder Rank: {m_encoder_rank}, Decoder Rank: {m_decoder_rank}, "
+        f"Encoder Positions: {m_encoder_positional_mode}"
+    )
 
     model = StreamingWhisper(
         dims, 
         gran=m_gran, 
         rank=m_rank, 
+        encoder_rank=m_encoder_rank,
+        decoder_rank=m_decoder_rank,
         extra_gran_blocks=m_extra,
         encoder_positional_mode=m_encoder_positional_mode,
     )

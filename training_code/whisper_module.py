@@ -163,7 +163,7 @@ class WhisperCustomModel(LightningModule):
     
 
 class LoRAStreamedWhisper(WhisperCustomModel):
-    def __init__(self, cfg: Config, model_name="tiny", lang="en", train_dataset: str = None, eval_dataset: str = None, task="transcribe", rank=8, enc_emb_gran=15, enc_context=1, sim_stream=False, beam_size=None, use_kv_cache=False, use_ca_kv_cache=False, get_times=False, eval_script=False, calc_rwer_arwer=False) -> None:
+    def __init__(self, cfg: Config, model_name="tiny", lang="en", train_dataset: str = None, eval_dataset: str = None, task="transcribe", rank=8, encoder_rank=None, decoder_rank=None, enc_emb_gran=15, enc_context=1, sim_stream=False, beam_size=None, use_kv_cache=False, use_ca_kv_cache=False, get_times=False, eval_script=False, calc_rwer_arwer=False) -> None:
         super().__init__(cfg, model_name, lang, train_dataset, eval_dataset, task)
 
         self.automatic_optimization = not cfg.streaming_train
@@ -175,6 +175,8 @@ class LoRAStreamedWhisper(WhisperCustomModel):
                                                                                     advisor_ckpt_path=None,
                                                                                     advisor_type=None,
                                                                                     rank=rank,
+                                                                                    encoder_rank=encoder_rank,
+                                                                                    decoder_rank=decoder_rank,
                                                                                     gran=enc_emb_gran,
                                                                                     extra_gran_blocks=enc_context,
                                                                                     encoder_positional_mode=cfg.encoder_positional_mode,
@@ -200,6 +202,8 @@ class LoRAStreamedWhisper(WhisperCustomModel):
 
         self.model_name = model_name
         self.rank = self.model.rank
+        self.encoder_rank = self.model.encoder_rank
+        self.decoder_rank = self.model.decoder_rank
         self.enc_emb_gran = self.model.gran
         self.enc_context = self.model.extra_gran_blocks
         self.encoder_positional_mode = self.model.encoder_positional_mode

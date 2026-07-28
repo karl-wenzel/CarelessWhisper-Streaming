@@ -466,15 +466,22 @@ class StreamingWhisper(Whisper):
         cache_gran: bool = True,
         gran: int = 16,
         rank: int = 0,
+        encoder_rank: Optional[int] = None,
+        decoder_rank: Optional[int] = None,
         extra_gran_blocks: int = 0,
         random_masked_model: bool = False,
         encoder_positional_mode: str = "sinusoidal",
     ):
         super().__init__(dims)
 
+        encoder_rank = rank if encoder_rank is None else encoder_rank
+        decoder_rank = rank if decoder_rank is None else decoder_rank
+
         self.cache_gran = cache_gran
         self.gran = gran
         self.rank = rank
+        self.encoder_rank = encoder_rank
+        self.decoder_rank = decoder_rank
         self.extra_gran_blocks = extra_gran_blocks
         self.random_masked_model = random_masked_model
         self.encoder_positional_mode = validate_encoder_positional_mode(encoder_positional_mode)
@@ -493,7 +500,7 @@ class StreamingWhisper(Whisper):
             self.dims.n_audio_layer,
             cache_gran=cache_gran,
             gran=gran,
-            rank=rank,
+            rank=encoder_rank,
             extra_gran_blocks=extra_gran_blocks,
             encoder_positional_mode=self.encoder_positional_mode,
         )
@@ -504,7 +511,7 @@ class StreamingWhisper(Whisper):
             self.dims.n_text_state,
             self.dims.n_text_head,
             self.dims.n_text_layer,
-            rank=rank
+            rank=decoder_rank
         )
 
         # Advisor params - Dropped.

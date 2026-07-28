@@ -40,6 +40,8 @@ class Config:
     lora: bool = False
     lora_ckpt: str = None
     rank: int = 16
+    encoder_rank: int = None
+    decoder_rank: int = None
     gran: int = 15
     extra_gran_blocks: int = 1
     sim_stream: bool = False
@@ -102,6 +104,8 @@ def parse_cmdl():
     # LoRA 
     parser.add_argument('--lora_ckpt', type=str, help="ckpt loading (for LoRA training mode only)", default=None)
     parser.add_argument('--rank', type=int, help="LoRA rank", default=16)
+    parser.add_argument('--encoder_rank', type=int, help="Encoder LoRA rank. Defaults to --rank when omitted.", default=None)
+    parser.add_argument('--decoder_rank', type=int, help="Decoder LoRA rank. Defaults to --rank when omitted.", default=None)
     parser.add_argument('--gran', type=int, help="Granularity in encoder frames to calc attention on", default=15)
     parser.add_argument('--extra_gran_blocks', type=int, help="How many extra granularity blocks we add on encoder causal block matrix", default=1)
     parser.add_argument('--streaming_fraction', type=float, help="Fraction of the available streaming sample points to train on.", default=1)

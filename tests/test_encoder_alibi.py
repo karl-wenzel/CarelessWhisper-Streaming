@@ -26,6 +26,23 @@ def tiny_dims(n_audio_ctx: int = 8) -> ModelDimensions:
 
 
 class EncoderAlibiTests(unittest.TestCase):
+    def test_streaming_whisper_applies_separate_lora_ranks(self):
+        model = StreamingWhisper(
+            tiny_dims(),
+            gran=2,
+            rank=2,
+            encoder_rank=3,
+            decoder_rank=5,
+            extra_gran_blocks=1,
+        )
+
+        self.assertEqual(model.rank, 2)
+        self.assertEqual(model.encoder_rank, 3)
+        self.assertEqual(model.decoder_rank, 5)
+        self.assertEqual(model.encoder.blocks[0].attn.query.lora_layer.rank, 3)
+        self.assertEqual(model.decoder.blocks[0].attn.query.lora_layer.rank, 5)
+        self.assertEqual(model.decoder.blocks[0].cross_attn.query.lora_layer.rank, 5)
+
     def test_default_positional_mode_is_sinusoidal(self):
         model = StreamingWhisper(tiny_dims(), gran=2, rank=2, extra_gran_blocks=1)
         mel = torch.randn(1, model.dims.n_mels, model.dims.n_audio_ctx * 2)
@@ -315,6 +332,35 @@ class EncoderAlibiTests(unittest.TestCase):
 
         self.assertEqual(loaded.encoder.encoder_positional_mode, "alibi")
         self.assertEqual(loaded.gran, 2)
+
+    def test_local_checkpoint_restores_separate_lora_ranks(self):
+        dims = tiny_dims()
+        checkpoint = {
+            "state_dict": {},
+            "dims": vars(dims),
+            "hyper_parameters": {
+                "gran": 2,
+                "rank": 2,
+                "encoder_rank": 3,
+                "decoder_rank": 5,
+                "extra_gran_blocks": 0,
+            },
+        }
+
+        with patch("os.path.exists", return_value=True), patch(
+            "torch.load",
+            return_value=checkpoint,
+        ):
+            loaded = careless_whisper_stream.load_streaming_model(
+                "tiny",
+                device="cpu",
+                local_ckpt_path="split-rank.ckpt",
+            )
+
+        self.assertEqual(loaded.encoder_rank, 3)
+        self.assertEqual(loaded.decoder_rank, 5)
+        self.assertEqual(loaded.encoder.blocks[0].attn.query.lora_layer.rank, 3)
+        self.assertEqual(loaded.decoder.blocks[0].attn.query.lora_layer.rank, 5)
 
 
 if __name__ == "__main__":
