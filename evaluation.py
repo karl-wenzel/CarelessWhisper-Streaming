@@ -627,17 +627,18 @@ def _format_strict_summary(
     return " | ".join(summary_parts)
 
 
-def _format_time_bin_wer_summary(time_bin_counts: dict[int, dict[str, int]], bin_seconds: float) -> str:
+PREFIX_WER_SECONDS = tuple(range(10, 61, 10))
+
+
+def _format_prefix_wer_summary(prefix_wer_counts: dict[int, dict[str, int]]) -> str:
     summary_parts = []
-    for bin_index in sorted(time_bin_counts):
-        counts = time_bin_counts[bin_index]
+    for prefix_seconds in sorted(prefix_wer_counts):
+        counts = prefix_wer_counts[prefix_seconds]
         denominator = counts["c"] + counts["d"] + counts["s"]
         errors = counts["i"] + counts["d"] + counts["s"]
         wer_text = f"{(errors / denominator) * 100:.2f}%" if denominator > 0 else "N/A"
-        start = bin_index * bin_seconds
-        end = start + bin_seconds
         summary_parts.append(
-            f"{start:g}-{end:g}s: {wer_text} "
+            f"{prefix_seconds}s prefix: {wer_text} "
             f"(samples={counts['samples']}, I/D/S/C={counts['i']}/{counts['d']}/{counts['s']}/{counts['c']})"
         )
     return " | ".join(summary_parts)
@@ -679,70 +680,37 @@ def _hypothesis_at_or_before(results, time_sec: float, chunk_duration_sec: float
     return _normalize_for_eval(_result_text_for_eval(results[result_index]), normalizer)
 
 
-def _new_hypothesis_text_for_interval(
-    results,
-    start_sec: float,
-    end_sec: float,
-    chunk_duration_sec: float,
-    normalizer,
-) -> str:
-    start_words = _hypothesis_at_or_before(results, start_sec, chunk_duration_sec, normalizer).split()
-    end_words = _hypothesis_at_or_before(results, end_sec, chunk_duration_sec, normalizer).split()
-
-    # Time-bin WER is meant to isolate intervals. Rolling decoder state can
-    # revise earlier cumulative text, so start_words is not always a literal
-    # prefix of end_words. Align both hypotheses and remove everything through
-    # the last matched old segment before scoring the interval suffix.
-    if not start_words:
-        return " ".join(end_words)
-
-    matcher = difflib.SequenceMatcher(a=start_words, b=end_words, autojunk=False)
-    matched_blocks = [block for block in matcher.get_matching_blocks() if block.size > 0]
-    if not matched_blocks:
-        return " ".join(end_words[len(start_words):])
-
-    old_boundary = max(block.b + block.size for block in matched_blocks)
-    return " ".join(end_words[old_boundary:])
-
-
-def _reference_text_for_interval(gt_words, start_sec: float, end_sec: float, normalizer) -> str:
-    interval_words = [
-        w["word"]
-        for w in gt_words
-        if start_sec <= w["start"] < end_sec
-    ]
-    return _normalize_for_eval(" ".join(interval_words), normalizer)
-
-
-def _accumulate_time_bin_wer(
-    time_bin_counts: dict[int, dict[str, int]],
+def _accumulate_prefix_wer(
+    prefix_wer_counts: dict[int, dict[str, int]],
     results,
     gt_words,
     audio_duration: float,
     chunk_duration_sec: float,
-    bin_seconds: float,
     normalizer,
 ) -> None:
     if not results:
         return
 
-    bin_count = int(np.ceil(audio_duration / bin_seconds))
-    for bin_index in range(bin_count):
-        start_sec = bin_index * bin_seconds
-        end_sec = min(audio_duration, start_sec + bin_seconds)
-        hypothesis_end_sec = len(results) * chunk_duration_sec if bin_index == bin_count - 1 else end_sec
-        reference_text = _reference_text_for_interval(gt_words, start_sec, end_sec, normalizer)
-        hypothesis_text = _new_hypothesis_text_for_interval(
+    for prefix_seconds in PREFIX_WER_SECONDS:
+        # Requirement: prefix WER should compare cumulative hypotheses at fixed
+        # 10s checkpoints. Shorter samples do not contribute to later prefixes.
+        if audio_duration < prefix_seconds:
+            continue
+
+        reference_text = _normalize_for_eval(
+            get_gt_prefix_at_time(gt_words, prefix_seconds),
+            normalizer,
+        )
+        hypothesis_text = _hypothesis_at_or_before(
             results,
-            start_sec,
-            hypothesis_end_sec,
+            prefix_seconds,
             chunk_duration_sec,
             normalizer,
         )
 
         i, d, s, c = calculate_idsc(reference_text, hypothesis_text)
-        counts = time_bin_counts.setdefault(
-            bin_index,
+        counts = prefix_wer_counts.setdefault(
+            prefix_seconds,
             {"i": 0, "d": 0, "s": 0, "c": 0, "samples": 0},
         )
         counts["i"] += i
@@ -801,8 +769,7 @@ def evaluate():
     parser.add_argument("--decoder_roll_max_prefix_tokens", type=int, default=48, help="Maximum BPE tokens kept as active decoder prefix after a roll.")
     parser.add_argument("--decoder_token_time_lag_seconds", type=float, default=2.0, help="Seconds subtracted from first-seen token time estimates for decoder rolling.")
     parser.add_argument("--decoder_roll_diagnostics", action="store_true", help="Print decoder roll event and prefix/generated overlap diagnostics during transcription.")
-    parser.add_argument("--time_bin_wer", action="store_true", help="Print and save interval WER grouped by elapsed-audio time bins.")
-    parser.add_argument("--time_bin_seconds", type=float, default=5.0, help="Bin size in seconds for --time_bin_wer.")
+    parser.add_argument("--prefix_wer", action="store_true", help="Print and save cumulative WER at 10s, 20s, 30s, 40s, 50s, and 60s audio prefixes.")
     parser.add_argument("-verbose", action="store_true", help="Prints additional info while evaluating")
     parser.add_argument("-cw", action="store_true", help="Uses a CW whisper base model instead of a local model.")
     parser.add_argument("--force_hf_download", action="store_true", help="When used with -cw, force Hugging Face to download the CW model instead of reusing the local HF cache.")
@@ -818,8 +785,6 @@ def evaluate():
         raise ValueError("--dataset_sample_count cannot be used together with --dataset_fraction.")
     if args.dataset_sample_count is not None and args.dataset_sample_count <= 0:
         raise ValueError("--dataset_sample_count must be a positive integer.")
-    if args.time_bin_seconds <= 0:
-        raise ValueError("--time_bin_seconds must be positive.")
     if args.reset_decoder_on_encoder_slide and not args.use_sliding_encoder_cache:
         raise ValueError("--reset_decoder_on_encoder_slide requires --use_sliding_encoder_cache.")
     if args.encoder_cache_diagnostic_interval <= 0:
@@ -842,8 +807,8 @@ def evaluate():
         raise ValueError("--force_hf_download is only supported for CarelessWhisper streaming HF checkpoints.")
     if args.offline_whisper and args.checkpoint is not None:
         raise ValueError("--checkpoint selects CarelessWhisper training checkpoints and cannot be used with --offline_whisper.")
-    if args.offline_whisper and args.time_bin_wer:
-        raise ValueError("--time_bin_wer is streaming-only and cannot be used with --offline_whisper.")
+    if args.offline_whisper and args.prefix_wer:
+        raise ValueError("--prefix_wer is streaming-only and cannot be used with --offline_whisper.")
     if args.offline_whisper and args.wir_n:
         raise ValueError("--wir_n is streaming-only and cannot be used with --offline_whisper.")
     offline_incompatible_flags = [
@@ -910,7 +875,7 @@ def evaluate():
         print(f"Strict correction distances: {strict_k_values}")
         print(f"WIR suffix tolerances: {wir_suffix_tolerances}")
     else:
-        print("Streaming-only metrics disabled: strict/SWER, RWER, ARWER, WIR, and time-bin WER.")
+        print("Streaming-only metrics disabled: strict/SWER, RWER, ARWER, WIR, and prefix WER.")
 
     # 1. Load Dataset CSV
     if args.dataset_name not in ds_paths:
@@ -1008,7 +973,7 @@ def evaluate():
         suffix_tolerance: {"changed_words": 0, "total_words": 0}
         for suffix_tolerance in wir_suffix_tolerances
     }
-    time_bin_counts = {}
+    prefix_wer_counts = {}
 
     all_chunk_latencies = []
     total_audio_duration_sec = 0.0
@@ -1116,14 +1081,13 @@ def evaluate():
                     results=results,
                 )
             )
-        if args.time_bin_wer:
-            _accumulate_time_bin_wer(
-                time_bin_counts,
+        if args.prefix_wer:
+            _accumulate_prefix_wer(
+                prefix_wer_counts,
                 results,
                 gt_words,
                 audio_duration,
                 chunk_duration_sec,
-                args.time_bin_seconds,
                 normalizer,
             )
 
@@ -1259,9 +1223,9 @@ def evaluate():
                 "wir": float(changed_words / total_words if total_words > 0 else 0),
             }
         wir = wir_stats_by_n[0]["wir"]
-    time_bin_wer_summary = (
-        _format_time_bin_wer_summary(time_bin_counts, args.time_bin_seconds)
-        if args.time_bin_wer
+    prefix_wer_summary = (
+        _format_prefix_wer_summary(prefix_wer_counts)
+        if args.prefix_wer
         else ""
     )
 
@@ -1316,9 +1280,9 @@ def evaluate():
         "wir_total_words": "" if args.offline_whisper else int(wir_stats_by_n[0]["total_words"]),
         "wir_n_values": "" if args.offline_whisper else " ".join(str(n) for n in wir_suffix_tolerances),
         "wir_summary": "" if args.offline_whisper else _format_wir_summary(wir_stats_by_n),
-        "time_bin_wer_enabled": bool(args.time_bin_wer),
-        "time_bin_seconds": float(args.time_bin_seconds),
-        "time_bin_wer_summary": time_bin_wer_summary,
+        "prefix_wer_enabled": bool(args.prefix_wer),
+        "prefix_wer_seconds": " ".join(str(seconds) for seconds in PREFIX_WER_SECONDS),
+        "prefix_wer_summary": prefix_wer_summary,
         "wer_insertions": int(global_wer_i),
         "wer_deletions": int(global_wer_d),
         "wer_substitutions": int(global_wer_s),
@@ -1338,10 +1302,10 @@ def evaluate():
 
     append_evaluation_row(evaluation_file, stats)
     print(f"Stats saved to: {evaluation_file}")
-    if args.time_bin_wer:
+    if args.prefix_wer:
         print()
-        print("=== Time-Binned Interval WER ===")
-        print(time_bin_wer_summary.replace(" | ", "\n") if time_bin_wer_summary else "No time-bin WER entries collected.")
+        print("=== Prefix WER ===")
+        print(prefix_wer_summary.replace(" | ", "\n") if prefix_wer_summary else "No prefix WER entries collected.")
     if args.encoder_cache_diagnostics:
         print()
         print("=== Encoder Cache Diagnostics Summary ===")

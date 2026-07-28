@@ -47,8 +47,7 @@ PRE_EVALUATION_PARAMETER_NAMES = [
 EVALUATION_ONLY_PARAMETER_NAMES = [
     "strict_k",
     "wir_n",
-    "time_bin_wer",
-    "time_bin_seconds",
+    "prefix_wer",
     "encoder_cache_diagnostics",
     "encoder_cache_diagnostic_interval",
     "decoder_roll_diagnostics",

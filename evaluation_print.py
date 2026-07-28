@@ -65,6 +65,10 @@ def _format_strict_display(row: dict) -> str:
     return f"k={_to_int(row.get('strict_k'))}: {_fmt_percent(row.get('strict_wer'))}"
 
 
+def _format_prefix_wer_display(row: dict) -> str:
+    return str(row.get("prefix_wer_summary", "") or "").strip()
+
+
 def _format_row(row: dict) -> str:
     lines = []
     evaluation_mode = _evaluation_mode(row)
@@ -132,6 +136,9 @@ def _format_row(row: dict) -> str:
         lines.append(f"RWER:          {_fmt_percent(row.get('rwer'))}")
         lines.append(f"ARWER:         {_fmt_percent(row.get('arwer'))}")
         lines.append(f"WIR:           {_format_wir_display(row)}")
+        prefix_wer_summary = _format_prefix_wer_display(row)
+        if prefix_wer_summary:
+            lines.append(f"PREFIX WER:    {prefix_wer_summary}")
     lines.append("-" * 20)
     lines.append(f"Avg Latency:   {_fmt_latency_ms(row.get('avg_latency_ms'))}")
     lines.append(f"RTF:           {_to_float(row.get('rtf')):.4f}")
