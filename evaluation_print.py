@@ -69,6 +69,12 @@ def _format_prefix_wer_display(row: dict) -> str:
     return str(row.get("prefix_wer_summary", "") or "").strip()
 
 
+def _has_delay_n_metrics(row: dict) -> bool:
+    return not _is_blank(row.get("delay_n_rtf", "")) or not _is_blank(
+        row.get("delay_n_avg_latency_ms", "")
+    )
+
+
 def _format_row(row: dict) -> str:
     lines = []
     evaluation_mode = _evaluation_mode(row)
@@ -139,6 +145,11 @@ def _format_row(row: dict) -> str:
         prefix_wer_summary = _format_prefix_wer_display(row)
         if prefix_wer_summary:
             lines.append(f"PREFIX WER:    {prefix_wer_summary}")
+        if _has_delay_n_metrics(row):
+            lines.append(f"DELAY-N RTF:   {_to_float(row.get('delay_n_rtf')):.4f}")
+            if not _is_blank(row.get("delay_n_weighted_rtf", "")):
+                lines.append(f"DELAY-N WRTF:  {_to_float(row.get('delay_n_weighted_rtf')):.4f}")
+            lines.append(f"DELAY-N LAT:   {_fmt_latency_ms(row.get('delay_n_avg_latency_ms'))}")
     lines.append("-" * 20)
     lines.append(f"Avg Latency:   {_fmt_latency_ms(row.get('avg_latency_ms'))}")
     lines.append(f"RTF:           {_to_float(row.get('rtf')):.4f}")

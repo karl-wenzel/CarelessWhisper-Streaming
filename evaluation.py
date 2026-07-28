@@ -628,6 +628,7 @@ def _format_strict_summary(
 
 
 PREFIX_WER_SECONDS = tuple(range(10, 61, 10))
+DELAY_N_MAX_WAIT_SECONDS = 1.0
 
 
 def _format_prefix_wer_summary(prefix_wer_counts: dict[int, dict[str, int]]) -> str:
@@ -720,6 +721,93 @@ def _accumulate_prefix_wer(
         counts["samples"] += 1
 
 
+def _delay_n_result_words(result, normalizer) -> list[str]:
+    return _normalize_for_eval(_result_text_for_eval(result), normalizer).split()
+
+
+def calculate_delay_n_display_stats(
+    results,
+    audio_duration: float,
+    chunk_duration_sec: float,
+    normalizer,
+    max_wait_seconds: float = DELAY_N_MAX_WAIT_SECONDS,
+) -> dict[str, float | int]:
+    """
+    Simulate a display policy that withholds the newest trailing word.
+
+    Requirement: the visual layer delays the last word until the next word is
+    appended to the cumulative result, but emits it after at most one second so
+    silence does not leave the UI looking stuck.
+    """
+    if not results or audio_duration <= 0 or chunk_duration_sec <= 0:
+        return {
+            "perceived_processing_time_sec": 0.0,
+            "rtf": 0.0,
+            "latency_sum_sec": 0.0,
+            "emitted_words": 0,
+        }
+
+    max_wait_seconds = max(0.0, float(max_wait_seconds))
+    emitted_count = 0
+    emitted_words = 0
+    latency_sum_sec = 0.0
+    total_processing_time_sec = 0.0
+    last_available_time_sec = 0.0
+    pending = None
+
+    def emit_word(display_time_sec: float, first_seen_audio_time_sec: float) -> None:
+        nonlocal emitted_words, latency_sum_sec
+        emitted_words += 1
+        latency_sum_sec += max(0.0, display_time_sec - first_seen_audio_time_sec)
+
+    for step, result in enumerate(results):
+        processing_time_sec = float(getattr(result, "processing_time", 0.0) or 0.0)
+        total_processing_time_sec += processing_time_sec
+        audio_time_sec = min(audio_duration, (step + 1) * chunk_duration_sec)
+        available_time_sec = audio_time_sec + processing_time_sec
+        last_available_time_sec = available_time_sec
+        current_words = _delay_n_result_words(result, normalizer)
+
+        if pending is not None and pending["deadline_sec"] <= available_time_sec:
+            emit_word(pending["deadline_sec"], pending["first_seen_audio_time_sec"])
+            emitted_count = max(emitted_count, pending["word_index"] + 1)
+            pending = None
+
+        if pending is not None and len(current_words) > pending["word_index"] + 1:
+            emit_word(available_time_sec, pending["first_seen_audio_time_sec"])
+            emitted_count = max(emitted_count, pending["word_index"] + 1)
+            pending = None
+
+        if len(current_words) <= emitted_count:
+            continue
+
+        appended_count = len(current_words) - emitted_count
+        immediate_count = max(0, appended_count - 1)
+        for _ in range(immediate_count):
+            emit_word(available_time_sec, audio_time_sec)
+            emitted_count += 1
+
+        pending = {
+            "word_index": len(current_words) - 1,
+            "first_seen_audio_time_sec": audio_time_sec,
+            "deadline_sec": available_time_sec + max_wait_seconds,
+        }
+
+    final_display_time_sec = last_available_time_sec
+    if pending is not None:
+        final_display_time_sec = max(final_display_time_sec, pending["deadline_sec"])
+        emit_word(pending["deadline_sec"], pending["first_seen_audio_time_sec"])
+
+    final_visual_hold_sec = max(0.0, final_display_time_sec - last_available_time_sec)
+    perceived_processing_time_sec = total_processing_time_sec + final_visual_hold_sec
+    return {
+        "perceived_processing_time_sec": float(perceived_processing_time_sec),
+        "rtf": float(perceived_processing_time_sec / audio_duration),
+        "latency_sum_sec": float(latency_sum_sec),
+        "emitted_words": int(emitted_words),
+    }
+
+
 def evaluate():
     parser = argparse.ArgumentParser(description="Evaluate CarelessWhisper WER on a dataset")
 
@@ -770,6 +858,7 @@ def evaluate():
     parser.add_argument("--decoder_token_time_lag_seconds", type=float, default=2.0, help="Seconds subtracted from first-seen token time estimates for decoder rolling.")
     parser.add_argument("--decoder_roll_diagnostics", action="store_true", help="Print decoder roll event and prefix/generated overlap diagnostics during transcription.")
     parser.add_argument("--prefix_wer", action="store_true", help="Print and save cumulative WER at 10s, 20s, 30s, 40s, 50s, and 60s audio prefixes.")
+    parser.add_argument("--delay_n_rtf", action="store_true", help="Report perceived RTF and latency when visually delaying the newest trailing word until another word is appended, with a 1s timeout.")
     parser.add_argument("-verbose", action="store_true", help="Prints additional info while evaluating")
     parser.add_argument("-cw", action="store_true", help="Uses a CW whisper base model instead of a local model.")
     parser.add_argument("--force_hf_download", action="store_true", help="When used with -cw, force Hugging Face to download the CW model instead of reusing the local HF cache.")
@@ -809,6 +898,8 @@ def evaluate():
         raise ValueError("--checkpoint selects CarelessWhisper training checkpoints and cannot be used with --offline_whisper.")
     if args.offline_whisper and args.prefix_wer:
         raise ValueError("--prefix_wer is streaming-only and cannot be used with --offline_whisper.")
+    if args.offline_whisper and args.delay_n_rtf:
+        raise ValueError("--delay_n_rtf is streaming-only and cannot be used with --offline_whisper.")
     if args.offline_whisper and args.wir_n:
         raise ValueError("--wir_n is streaming-only and cannot be used with --offline_whisper.")
     offline_incompatible_flags = [
@@ -875,7 +966,7 @@ def evaluate():
         print(f"Strict correction distances: {strict_k_values}")
         print(f"WIR suffix tolerances: {wir_suffix_tolerances}")
     else:
-        print("Streaming-only metrics disabled: strict/SWER, RWER, ARWER, WIR, and prefix WER.")
+        print("Streaming-only metrics disabled: strict/SWER, RWER, ARWER, WIR, prefix WER, and delay-n RTF.")
 
     # 1. Load Dataset CSV
     if args.dataset_name not in ds_paths:
@@ -974,6 +1065,10 @@ def evaluate():
         for suffix_tolerance in wir_suffix_tolerances
     }
     prefix_wer_counts = {}
+    delay_n_sample_rtfs = []
+    delay_n_latency_sum_sec = 0.0
+    delay_n_emitted_words = 0
+    delay_n_total_perceived_processing_time_sec = 0.0
 
     all_chunk_latencies = []
     total_audio_duration_sec = 0.0
@@ -1089,6 +1184,19 @@ def evaluate():
                 audio_duration,
                 chunk_duration_sec,
                 normalizer,
+            )
+        if args.delay_n_rtf:
+            delay_n_stats = calculate_delay_n_display_stats(
+                results,
+                audio_duration,
+                chunk_duration_sec,
+                normalizer,
+            )
+            delay_n_sample_rtfs.append(float(delay_n_stats["rtf"]))
+            delay_n_latency_sum_sec += float(delay_n_stats["latency_sum_sec"])
+            delay_n_emitted_words += int(delay_n_stats["emitted_words"])
+            delay_n_total_perceived_processing_time_sec += float(
+                delay_n_stats["perceived_processing_time_sec"]
             )
 
         if not args.offline_whisper:
@@ -1228,6 +1336,21 @@ def evaluate():
         if args.prefix_wer
         else ""
     )
+    delay_n_rtf = (
+        float(np.mean(delay_n_sample_rtfs))
+        if args.delay_n_rtf and delay_n_sample_rtfs
+        else None
+    )
+    delay_n_weighted_rtf = (
+        float(delay_n_total_perceived_processing_time_sec / total_audio_duration_sec)
+        if args.delay_n_rtf and total_audio_duration_sec > 0
+        else None
+    )
+    delay_n_avg_latency_ms = (
+        float((delay_n_latency_sum_sec / delay_n_emitted_words) * 1000)
+        if args.delay_n_rtf and delay_n_emitted_words > 0
+        else None
+    )
 
     avg_latency = np.mean(all_chunk_latencies) if all_chunk_latencies else 0
     rtf = total_processing_time_sec / total_audio_duration_sec if total_audio_duration_sec > 0 else 0
@@ -1283,6 +1406,12 @@ def evaluate():
         "prefix_wer_enabled": bool(args.prefix_wer),
         "prefix_wer_seconds": " ".join(str(seconds) for seconds in PREFIX_WER_SECONDS),
         "prefix_wer_summary": prefix_wer_summary,
+        "delay_n_rtf_enabled": bool(args.delay_n_rtf),
+        "delay_n_rtf": delay_n_rtf,
+        "delay_n_weighted_rtf": delay_n_weighted_rtf,
+        "delay_n_avg_latency_ms": delay_n_avg_latency_ms,
+        "delay_n_emitted_words": "" if delay_n_emitted_words == 0 else int(delay_n_emitted_words),
+        "delay_n_max_wait_seconds": DELAY_N_MAX_WAIT_SECONDS,
         "wer_insertions": int(global_wer_i),
         "wer_deletions": int(global_wer_d),
         "wer_substitutions": int(global_wer_s),
@@ -1306,6 +1435,12 @@ def evaluate():
         print()
         print("=== Prefix WER ===")
         print(prefix_wer_summary.replace(" | ", "\n") if prefix_wer_summary else "No prefix WER entries collected.")
+    if args.delay_n_rtf:
+        print()
+        print("=== Delay-N Visual Emission ===")
+        print(f"Avg sample RTF: {delay_n_rtf:.4f}" if delay_n_rtf is not None else "Avg sample RTF: N/A")
+        print(f"Weighted RTF:   {delay_n_weighted_rtf:.4f}" if delay_n_weighted_rtf is not None else "Weighted RTF:   N/A")
+        print(f"Avg latency:    {delay_n_avg_latency_ms:.1f} ms" if delay_n_avg_latency_ms is not None else "Avg latency:    N/A")
     if args.encoder_cache_diagnostics:
         print()
         print("=== Encoder Cache Diagnostics Summary ===")

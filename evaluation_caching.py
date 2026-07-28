@@ -48,6 +48,7 @@ EVALUATION_ONLY_PARAMETER_NAMES = [
     "strict_k",
     "wir_n",
     "prefix_wer",
+    "delay_n_rtf",
     "encoder_cache_diagnostics",
     "encoder_cache_diagnostic_interval",
     "decoder_roll_diagnostics",
