@@ -512,42 +512,70 @@ def _result_text_for_eval(result) -> str:
 
 def calculate_word_instability(results, normalizer):
     """
-    Count how many previously emitted words get revised in later predictions.
-
-    For each pair of consecutive streaming hypotheses, we find their longest
-    common prefix in word space. Every previously emitted word beyond that
-    prefix is treated as a revision event. This lets the same final word accrue
-    multiple changes over time if the hypothesis keeps getting rewritten.
+    Count word-level edits needed to revise previously emitted hypotheses.
     """
-    normalized_hypotheses = [
-        _normalize_for_eval(_result_text_for_eval(res), normalizer).split()
-        for res in results
-    ]
+    return calculate_word_instability_with_suffix_tolerance(
+        results, normalizer, suffix_tolerance=0
+    )
 
-    if not normalized_hypotheses:
-        return 0, 0
+
+def _count_alignment_word_instability(previous_words, current_words, countable_previous_len=None):
+    """
+    Count revisions between two hypotheses using word alignment opcodes.
+
+    This intentionally treats pure append-at-end insertions as stable streaming
+    growth, while counting insertions inside an already emitted transcript as
+    revisions. That matches the WIR requirement that "Deck is blue" -> "the car
+    is blue" counts both "Deck" -> "the" and the inserted "car", but "the car
+    is" -> "the car is blue" does not count the newly appended "blue".
+    """
+    previous_len = len(previous_words)
+    if countable_previous_len is None:
+        countable_previous_len = previous_len
+    countable_previous_len = max(0, min(int(countable_previous_len), previous_len))
+
+    matcher = difflib.SequenceMatcher(
+        a=previous_words,
+        b=current_words,
+        autojunk=False,
+    )
 
     changed_word_count = 0
-    previous_words = normalized_hypotheses[0]
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        previous_span_len = i2 - i1
+        current_span_len = j2 - j1
+        countable_previous_span_len = max(
+            0,
+            min(i2, countable_previous_len) - min(i1, countable_previous_len),
+        )
 
-    for current_words in normalized_hypotheses[1:]:
-        common_prefix_len = 0
-        for prev_word, curr_word in zip(previous_words, current_words):
-            if prev_word != curr_word:
-                break
-            common_prefix_len += 1
+        if tag == "equal":
+            continue
+        if tag == "insert":
+            if i1 < countable_previous_len:
+                changed_word_count += current_span_len
+            continue
+        if tag == "delete":
+            changed_word_count += countable_previous_span_len
+            continue
+        if tag == "replace":
+            inserted_word_count = max(0, current_span_len - previous_span_len)
+            if i1 >= countable_previous_len:
+                inserted_word_count = 0
+            changed_word_count += countable_previous_span_len + inserted_word_count
+            continue
 
-        changed_word_count += max(0, len(previous_words) - common_prefix_len)
-        previous_words = current_words
+        raise ValueError(f"Unexpected alignment opcode: {tag}")
 
-    total_word_count = len(normalized_hypotheses[-1])
-    return changed_word_count, total_word_count
+    return changed_word_count
 
 
 def calculate_word_instability_with_suffix_tolerance(results, normalizer, suffix_tolerance: int = 0):
     """
-    Count revised words while ignoring changes inside the trailing
-    `suffix_tolerance` words of the previous hypothesis.
+    Count revised words with alignment-aware insertion handling.
+
+    Changes inside the trailing `suffix_tolerance` words of the previous
+    hypothesis are ignored by aligning only the countable previous prefix.
     """
     normalized_hypotheses = [
         _normalize_for_eval(_result_text_for_eval(res), normalizer).split()
@@ -562,14 +590,12 @@ def calculate_word_instability_with_suffix_tolerance(results, normalizer, suffix
     previous_words = normalized_hypotheses[0]
 
     for current_words in normalized_hypotheses[1:]:
-        common_prefix_len = 0
-        for prev_word, curr_word in zip(previous_words, current_words):
-            if prev_word != curr_word:
-                break
-            common_prefix_len += 1
-
         countable_previous_len = max(0, len(previous_words) - suffix_tolerance)
-        changed_word_count += max(0, countable_previous_len - common_prefix_len)
+        changed_word_count += _count_alignment_word_instability(
+            previous_words,
+            current_words,
+            countable_previous_len=countable_previous_len,
+        )
         previous_words = current_words
 
     total_word_count = len(normalized_hypotheses[-1])
