@@ -1634,29 +1634,7 @@ class DecodingTask:
         moved_tokens: list[int],
         kept_prefix_tokens: list[int],
     ):
-        if not self.options.decoder_roll_diagnostics:
-            return
-
-        self.decoder_roll_count += 1
-        cache_start_frame = getattr(self.encoder_cache_state, "cache_start_frame", 0)
-        audio_end_frame = self._current_audio_end_frame()
-        print(
-            "[decoder-roll] "
-            f"#{self.decoder_roll_count} mode={mode} "
-            f"audio_end={audio_end_frame * 0.02:.2f}s "
-            f"cache_start={cache_start_frame * 0.02:.2f}s "
-            f"pruned={self.last_encoder_cache_prune}f "
-            f"overlap={self.options.decoder_roll_overlap_seconds:.2f}s "
-            f"lag={self.options.decoder_token_time_lag_seconds:.2f}s "
-            f"max_prefix={self.options.decoder_roll_max_prefix_tokens} "
-            f"active_tokens={len(active_tokens)} "
-            f"move_tokens={len(moved_tokens)} "
-            f"keep_tokens={len(kept_prefix_tokens)} "
-            f"retired_tokens={len(self.decoder_retired_text_tokens) + len(moved_tokens)}"
-        )
-        print(f"[decoder-roll] moved_tail: {self._format_words(moved_tokens, tail=True)}")
-        print(f"[decoder-roll] kept_head: {self._format_words(kept_prefix_tokens, tail=False)}")
-        self.decoder_roll_diagnostic_pending_chunks = 3
+        return
 
     def _current_audio_end_frame(self) -> int:
         if hasattr(self, "encoder_cache_state") and self.encoder_cache_state is not None:
@@ -1929,27 +1907,6 @@ class DecodingTask:
                 + tokens[0]
             )
             texts: List[str] = [tokenizer.decode(output_tokens).strip()]
-            if (
-                self.options.decoder_roll_diagnostics
-                and self.decoder_roll_diagnostic_pending_chunks > 0
-            ):
-                overlap_words = self._suffix_prefix_word_overlap(prefix_tokens, tokens[0])
-                retired_words = len(self._token_words(self.decoder_retired_text_tokens))
-                prefix_words = len(self._token_words(prefix_tokens))
-                generated_words = len(self._token_words(tokens[0]))
-                total_words = len(texts[0].split())
-                print(
-                    "[decoder-roll][assembly] "
-                    f"pending={self.decoder_roll_diagnostic_pending_chunks} "
-                    f"retired_words={retired_words} "
-                    f"prefix_words={prefix_words} "
-                    f"generated_words={generated_words} "
-                    f"total_words={total_words} "
-                    f"prefix_generated_overlap_words={overlap_words}"
-                )
-                print(f"[decoder-roll][assembly] prefix_tail: {self._format_words(prefix_tokens, tail=True)}")
-                print(f"[decoder-roll][assembly] generated_head: {self._format_words(tokens[0], tail=False)}")
-                self.decoder_roll_diagnostic_pending_chunks -= 1
         else:
             texts: List[str] = [tokenizer.decode(t).strip() for t in tokens]
         sum_logprobs: List[float] = [lp[i] for i, lp in zip(selected, sum_logprobs)]

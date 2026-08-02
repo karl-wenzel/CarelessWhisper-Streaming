@@ -856,7 +856,7 @@ def evaluate():
     parser.add_argument("--decoder_roll_min_interval_seconds", type=float, default=2.0, help="Minimum seconds between decoder prefix rolls.")
     parser.add_argument("--decoder_roll_max_prefix_tokens", type=int, default=48, help="Maximum BPE tokens kept as active decoder prefix after a roll.")
     parser.add_argument("--decoder_token_time_lag_seconds", type=float, default=2.0, help="Seconds subtracted from first-seen token time estimates for decoder rolling.")
-    parser.add_argument("--decoder_roll_diagnostics", action="store_true", help="Print decoder roll event and prefix/generated overlap diagnostics during transcription.")
+    parser.add_argument("--decoder_roll_diagnostics", action="store_true", help="Deprecated no-op.")
     parser.add_argument("--prefix_wer", action="store_true", help="Print and save cumulative WER at 2s intervals from 0s through 60s audio prefixes.")
     parser.add_argument("--delay_n_rtf", action="store_true", help="Report perceived RTF and latency when visually delaying the newest trailing word until another word is appended, with a 1s timeout.")
     parser.add_argument("-verbose", action="store_true", help="Prints additional info while evaluating")
@@ -1019,8 +1019,6 @@ def evaluate():
         print("Evaluation cache bypassed by --force_hf_download; CW model will be freshly downloaded from Hugging Face.")
     elif args.encoder_cache_diagnostics:
         print("Evaluation cache bypassed by --encoder_cache_diagnostics; transcribe outputs will be recalculated for diagnostic logging.")
-    elif args.decoder_roll_diagnostics:
-        print("Evaluation cache bypassed by --decoder_roll_diagnostics; transcribe outputs will be recalculated for diagnostic logging.")
     else:
         cached_run = load_cached_run(
             cache_dir,

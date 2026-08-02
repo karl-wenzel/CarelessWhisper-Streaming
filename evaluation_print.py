@@ -96,20 +96,11 @@ def _format_row(row: dict) -> str:
         lines.append(f"CHUNK SIZE:    {row.get('chunk_size', '')}")
     if "max_sec_context" in row and not _is_blank(row.get("max_sec_context", "")):
         lines.append(f"MAX CONTEXT:   {row.get('max_sec_context', '')}s")
+    if str(row.get("use_sliding_encoder_cache", "")).lower() == "true":
+        lines.append("ENC SLIDING:   on")
     if "disable_encoder_kv_cache" in row and not _is_blank(row.get("disable_encoder_kv_cache", "")):
         cache_mode = "full-prefix" if str(row.get("disable_encoder_kv_cache", "")).lower() == "true" else "kv-cache"
         lines.append(f"ENC CACHE:     {cache_mode}")
-    if "reset_decoder_on_encoder_slide" in row and not _is_blank(row.get("reset_decoder_on_encoder_slide", "")):
-        decoder_rebase = "prefix-roll" if str(row.get("reset_decoder_on_encoder_slide", "")).lower() == "true" else "continuous"
-        lines.append(f"DEC RESET:     {decoder_rebase}")
-    if "decoder_roll_overlap_seconds" in row and not _is_blank(row.get("decoder_roll_overlap_seconds", "")):
-        lines.append(f"ROLL OVERLAP:  {row.get('decoder_roll_overlap_seconds', '')}s")
-    if "decoder_roll_min_interval_seconds" in row and not _is_blank(row.get("decoder_roll_min_interval_seconds", "")):
-        lines.append(f"ROLL MIN INT:  {row.get('decoder_roll_min_interval_seconds', '')}s")
-    if "decoder_roll_max_prefix_tokens" in row and not _is_blank(row.get("decoder_roll_max_prefix_tokens", "")):
-        lines.append(f"ROLL MAX PREF: {row.get('decoder_roll_max_prefix_tokens', '')} tokens")
-    if "decoder_token_time_lag_seconds" in row and not _is_blank(row.get("decoder_token_time_lag_seconds", "")):
-        lines.append(f"ROLL LAG:      {row.get('decoder_token_time_lag_seconds', '')}s")
     lines.append(f"MODE:          {evaluation_mode}")
     lines.append(f"WER:           {_fmt_percent(row.get('wer'))}")
     if not is_offline_whisper:

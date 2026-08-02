@@ -271,7 +271,7 @@ def cli():
     parser.add_argument("--decoder_roll_min_interval_seconds", type=float, default=2.0, help="Minimum seconds between decoder prefix rolls")
     parser.add_argument("--decoder_roll_max_prefix_tokens", type=int, default=48, help="Maximum BPE tokens kept as active decoder prefix after a roll")
     parser.add_argument("--decoder_token_time_lag_seconds", type=float, default=2.0, help="Seconds subtracted from first-seen token time estimates for decoder rolling")
-    parser.add_argument("--decoder_roll_diagnostics", action="store_true", help="Print decoder roll event and prefix/generated overlap diagnostics")
+    parser.add_argument("--decoder_roll_diagnostics", action="store_true", help="Deprecated no-op")
 
     args = parser.parse_args().__dict__
 
