@@ -912,7 +912,7 @@ def evaluate():
         ("--decoder_roll_diagnostics", args.decoder_roll_diagnostics),
     ]
     for flag_name, enabled in offline_incompatible_flags:
-        if enabled:
+        if args.offline_whisper and enabled:
             raise ValueError(f"{flag_name} is streaming-only and cannot be used with --offline_whisper.")
 
     evaluation_mode = "offline_whisper" if args.offline_whisper else "streaming"
