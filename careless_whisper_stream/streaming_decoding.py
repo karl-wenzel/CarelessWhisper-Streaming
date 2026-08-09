@@ -2,6 +2,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import re
+import math
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -86,6 +87,7 @@ class DecodingOptions:
     n_tokens_look_back: int = 2
     streaming_timestamps: bool = True
     wait_for_all: bool = False
+    enable_relative_beam_stop: bool = False
     force_first_tokens_timestamps: bool = False
 
     verbose: bool = True
@@ -637,6 +639,7 @@ class BeamStreamingDecoder(TokenDecoder):
                  pad_token: int = None,
                  wait_for_all: bool = False,
                  sample_begin: int = 4,
+                 enable_relative_beam_stop: bool = False,
                 ):
         self.tokens_per_frame = tokens_per_frame
         self.eot = eot
@@ -651,6 +654,7 @@ class BeamStreamingDecoder(TokenDecoder):
         self.sum_logprobs = torch.zeros(n_beams)
         self.timestamps_map = {}
         self.wait_for_all = wait_for_all
+        self.enable_relative_beam_stop = enable_relative_beam_stop
         self.finished_sequences = {}
         self.check_tokens_override = None
         self.commited_words = None
@@ -660,6 +664,13 @@ class BeamStreamingDecoder(TokenDecoder):
 
     def _mark_check_tokens(self, check: bool = True):
         self.check_tokens_override = check
+
+    def _has_reached_eot_threshold(self, sequences: Sequence[Tensor]) -> bool:
+        eot_beam_count = sum(self.eot in sequence for sequence in sequences)
+        # Relative stopping was requested as one fifth of the configured beams;
+        # round up so small or non-multiple-of-five beam counts remain meaningful.
+        required_eot_beams = math.ceil(self.n_beams / 5) if self.enable_relative_beam_stop else 1
+        return eot_beam_count >= required_eot_beams
 
     def _get_last_valid_token_index(self, prefix: Tensor):
         indices = torch.where((prefix == self.eot) | (prefix == self.pad_token))[0]
@@ -815,7 +826,7 @@ class BeamStreamingDecoder(TokenDecoder):
             self.last_logits.append(logits[source, range(0, tokens[i].shape[-1] - 1), tokens[i][1:]])
 
         if not self.wait_for_all: # greedy stop mode.
-            completed = any([self.eot in s for s in next_tokens]) # Greedy stop - Believe any beam that says enough.
+            completed = self._has_reached_eot_threshold(next_tokens)
             return tokens, completed
 
         # If we wait for EOT in all beams. regular beam stop mode.
@@ -944,7 +955,7 @@ class DecodingTask:
         elif options.stream_decode and options.beam_size > 0:
             #print(f"Initialized BeamStreamingDecoder with beam size {options.beam_size} and temperature {options.temperature}")
             self.decoder = BeamStreamingDecoder(
-                options.temperature, options.tokens_per_frame, tokenizer.eot, self.inference, options.n_tokens_look_back, options.beam_size, tokenizer.sot_lm, options.wait_for_all, self.sample_begin
+                options.temperature, options.tokens_per_frame, tokenizer.eot, self.inference, options.n_tokens_look_back, options.beam_size, tokenizer.sot_lm, options.wait_for_all, self.sample_begin, options.enable_relative_beam_stop
                 # options.temperature, options.tokens_per_frame, tokenizer.eot, self.inference, options.n_tokens_look_back, options.beam_size, tokenizer.eot, options.wait_for_all
             )
         elif options.beam_size is not None and options.beam_size > 0:
@@ -953,7 +964,7 @@ class DecodingTask:
 
             if self.options.localagreement:
                 self.decoder = BeamStreamingDecoder(
-                    options.temperature, options.tokens_per_frame, tokenizer.eot, self.inference, options.n_tokens_look_back, options.beam_size, tokenizer.sot_lm, options.wait_for_all, self.sample_begin
+                    options.temperature, options.tokens_per_frame, tokenizer.eot, self.inference, options.n_tokens_look_back, options.beam_size, tokenizer.sot_lm, options.wait_for_all, self.sample_begin, options.enable_relative_beam_stop
                 )
                 self.decoder._mark_check_tokens(False)
         else:

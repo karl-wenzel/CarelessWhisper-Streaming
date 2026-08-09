@@ -829,6 +829,11 @@ def evaluate():
     parser.add_argument("--dataset_sample_count", type=int, default=None, help="Evaluate on exactly this many randomly sampled dataset rows. Mutually exclusive with --dataset_fraction below 1.0.")
     parser.add_argument("--dataset_partition", type=str, default="test", help="The partition of the dataset that will be used for evaluation. 'test' by default.")
     parser.add_argument("--beam_size", type=int, default=5, help="Beam size during inference.")
+    parser.add_argument(
+        "--enable_relative_beam_stop",
+        action="store_true",
+        help="Stop streaming beam search after at least 20%% of beams emit EOS instead of after the first EOS.",
+    )
     parser.add_argument("--max_sec_context", type=int, default=30, help="Max audio context window in seconds before legacy streaming reset.")
     parser.add_argument("--lang", type=str, default=None, help="Language code for normalization/transcription, e.g. en or de. If omitted, infer from checkpoint or dataset.")
     parser.add_argument(
@@ -1143,6 +1148,7 @@ def evaluate():
                 simulate_stream=True,
                 language=row_language if row_language else ("auto" if args.multilingual else "en"),
                 beam_size=args.beam_size,
+                enable_relative_beam_stop=args.enable_relative_beam_stop,
                 temperature=0,
                 ca_kv_cache=args.ca_kv_cache,
                 sa_kv_cache=args.sa_kv_cache,
@@ -1374,6 +1380,7 @@ def evaluate():
         "chunk_duration_sec": "" if args.offline_whisper else float(chunk_duration_sec),
         "max_sec_context": "" if args.offline_whisper else int(args.max_sec_context),
         "beam_size": int(args.beam_size),
+        "enable_relative_beam_stop": bool(args.enable_relative_beam_stop),
         "strict_k": primary_strict_k,
         "strict_k_values": "" if args.offline_whisper else " ".join(str(k) for k in strict_k_values),
         "strict_summary": strict_summary,

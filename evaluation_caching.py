@@ -29,6 +29,7 @@ PRE_EVALUATION_PARAMETER_NAMES = [
     "dataset_sample_count",
     "dataset_partition",
     "beam_size",
+    "enable_relative_beam_stop",
     "max_sec_context",
     "lang",
     "encoder_positional_mode",
