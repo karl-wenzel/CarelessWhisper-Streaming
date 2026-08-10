@@ -12,6 +12,7 @@ class Config:
     batch_size: int = 16
     num_worker: int = 16
     num_train_epochs: int = 10
+    max_training_time: float = None
     gradient_accumulation_steps: int = 1
     sample_rate: int = 16000
     ckpt: str = None
@@ -91,6 +92,7 @@ def parse_cmdl():
     
     # DL Hyper Parameters
     parser.add_argument('--epochs', type=int, help="Number of training epochs", default=10)
+    parser.add_argument('--max_training_time', type=float, default=None, help="Maximum wall-clock training time in seconds. Checked between epochs; omitted means unlimited.")
     parser.add_argument('--batch_size', type=int, help="Batch size for training and evaluation. Better be 2^n, where n is a positive integer.", default=16)
     parser.add_argument('--dataset', type=str, nargs='+', help="Name of dataset to load", default=['TIMIT-WORD'])
     parser.add_argument('--learning_rate', type=float, help="Custom learning rate", default=0.0001)

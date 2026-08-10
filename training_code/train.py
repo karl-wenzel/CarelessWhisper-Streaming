@@ -13,6 +13,7 @@ from training_code.utils import Config, parse_cmdl
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning import Trainer, seed_everything
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint, EarlyStopping
+from training_code.callbacks import MaxTrainingTimeCallback
 
 # Add repo root to PYTHONPATH
 ROOT = Path(__file__).resolve().parent.parent
@@ -248,6 +249,13 @@ def train_model(log_output_dir, check_output_dir, model_name, train_set, val_set
 
     callback_list = [checkpoint_callback, LearningRateMonitor(logging_interval="epoch")]
 
+    max_time_callback = None
+    if cfg.max_training_time is not None:
+        if cfg.max_training_time <= 0:
+            raise ValueError("--max_training_time must be greater than zero.")
+        max_time_callback = MaxTrainingTimeCallback(cfg.max_training_time)
+        callback_list.append(max_time_callback)
+
     if cfg.early_stop:
         early_stop_callback = EarlyStopping(
             monitor="val/wer",
@@ -301,16 +309,27 @@ def train_model(log_output_dir, check_output_dir, model_name, train_set, val_set
         accumulate_grad_batches=cfg.gradient_accumulation_steps
     )
 
+    # The time budget deliberately includes baseline validation, but excludes
+    # model construction, warm-start loading, and trainer initialization.
+    if max_time_callback is not None:
+        max_time_callback.start()
+
     # True resume has priority over warmstart
     if cfg.ckpt is None:
         print("Running full validation before training...")
         validation_results = trainer.validate(model)
         _log_baseline_validation_metrics(wandblogger, validation_results, cfg)
+        if max_time_callback is not None and max_time_callback.has_expired():
+            print("Maximum training time reached during baseline validation; skipping training.")
+            return
         trainer.fit(model)
     else:
         print("Running full validation before resumed training...")
         validation_results = trainer.validate(model, ckpt_path=cfg.ckpt)
         _log_baseline_validation_metrics(wandblogger, validation_results, cfg)
+        if max_time_callback is not None and max_time_callback.has_expired():
+            print("Maximum training time reached during baseline validation; skipping resumed training.")
+            return
         trainer.fit(model, ckpt_path=cfg.ckpt)
 
 
@@ -329,6 +348,7 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         num_worker=args.num_worker,
         num_train_epochs=args.epochs,
+        max_training_time=args.max_training_time,
         gradient_accumulation_steps=args.gacc,
         no_logger=args.no_logger,
         dataset=args.dataset,
