@@ -259,6 +259,16 @@ def _resolve_csv_relative_path(csv_path: str, value: str) -> str:
     return os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(csv_path)), value))
 
 
+def _filter_samples_over_duration(df, csv_path: str, minimum_seconds: int):
+    """Keep selected rows whose WAV duration is strictly above the threshold."""
+    keep_indices = []
+    for index, row in df.iterrows():
+        wav_path = _resolve_csv_relative_path(csv_path, row["wav_path"])
+        if librosa.get_duration(path=wav_path) > minimum_seconds:
+            keep_indices.append(index)
+    return df.loc[keep_indices].reset_index(drop=True)
+
+
 def _cache_dataset_sample_records(df, csv_path: str) -> list[dict]:
     sample_records = []
     for sample_index, (_, row) in enumerate(df.iterrows()):
@@ -828,6 +838,7 @@ def evaluate():
     parser.add_argument("--dataset_fraction", type=float, default=1.0, help="Fraction of the dataset, that will be used. 1.0 (100%) by default.")
     parser.add_argument("--dataset_sample_count", type=int, default=None, help="Evaluate on exactly this many randomly sampled dataset rows. Mutually exclusive with --dataset_fraction below 1.0.")
     parser.add_argument("--dataset_partition", type=str, default="test", help="The partition of the dataset that will be used for evaluation. 'test' by default.")
+    parser.add_argument("--samples_over", type=int, default=None, metavar="SECONDS", help="After other dataset constraints, keep only samples longer than this many seconds.")
     parser.add_argument("--beam_size", type=int, default=5, help="Beam size during inference.")
     parser.add_argument(
         "--enable_relative_beam_stop",
@@ -879,6 +890,8 @@ def evaluate():
         raise ValueError("--dataset_sample_count cannot be used together with --dataset_fraction.")
     if args.dataset_sample_count is not None and args.dataset_sample_count <= 0:
         raise ValueError("--dataset_sample_count must be a positive integer.")
+    if args.samples_over is not None and args.samples_over < 0:
+        raise ValueError("--samples_over must be a non-negative integer number of seconds.")
     if args.reset_decoder_on_encoder_slide and not args.use_sliding_encoder_cache:
         raise ValueError("--reset_decoder_on_encoder_slide requires --use_sliding_encoder_cache.")
     if args.encoder_cache_diagnostic_interval <= 0:
@@ -992,6 +1005,14 @@ def evaluate():
         print(f"Subsetting dataset to {args.dataset_fraction * 100:.1f}%. New size: {len(df)} samples.")
     elif args.dataset_fraction <= 0 or args.dataset_fraction > 1.0:
         print(f"Warning: dataset_fraction {args.dataset_fraction} is out of bounds. Using full dataset.")
+
+    if args.samples_over is not None:
+        pre_duration_filter_count = len(df)
+        df = _filter_samples_over_duration(df, csv_path, args.samples_over)
+        print(
+            f"Keeping samples longer than {args.samples_over}s: "
+            f"{len(df)} of {pre_duration_filter_count} selected samples remain."
+        )
 
     cache_dir = evaluation_cache_dir(evaluation_file)
     sample_identity_records = _cache_dataset_sample_records(df, csv_path)
@@ -1375,6 +1396,7 @@ def evaluate():
         "partition": args.dataset_partition,
         "fraction": float(args.dataset_fraction),
         "requested_sample_count": "" if args.dataset_sample_count is None else int(args.dataset_sample_count),
+        "samples_over": "" if args.samples_over is None else int(args.samples_over),
         "sample_count": int(len(df)),
         "chunk_size": "" if args.offline_whisper else int(args.chunk_size),
         "chunk_duration_sec": "" if args.offline_whisper else float(chunk_duration_sec),
