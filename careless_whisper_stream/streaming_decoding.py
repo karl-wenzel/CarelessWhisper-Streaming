@@ -1365,25 +1365,8 @@ class DecodingTask:
                 f"tail{tail_window}_max_rel_pct": tail_max_rel_pct,
             }
         )
-        print(
-            "[encoder-cache] "
-            f"frame={self.frame_counter} "
-            f"audio_end={audio_end:.2f}s "
-            f"cache_start={self.encoder_cache_state.cache_start_frame * 0.02:.2f}s "
-            f"cached={self.encoder_cache_state.cached_frames}f "
-            f"pruned={self.last_encoder_cache_prune}f "
-            f"overlap={self.last_encoder_cache_overlap}f "
-            f"live_shape={tuple(live_features.shape)} "
-            f"ref_shape={tuple(reference_features.shape)} "
-            f"max={max_diff.item():.6g} "
-            f"mean={mean_diff.item():.6g} "
-            f"nrmse_pct={nrmse_pct:.6g}% "
-            f"max_rel_pct={max_rel_pct:.6g}% "
-            f"first{first_window}_max={first_max:.6g} "
-            f"first{first_window}_max_rel_pct={first_max_rel_pct:.6g}% "
-            f"tail{tail_window}_max={tail_max:.6g} "
-            f"tail{tail_window}_max_rel_pct={tail_max_rel_pct:.6g}%"
-        )
+        # Evaluation can collect thousands of samples, so retain the metrics for
+        # the final summary without printing one diagnostic line per chunk.
 
     def print_encoder_cache_diagnostics_summary(self):
         if not self.options.encoder_cache_diagnostics:

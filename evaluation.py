@@ -865,8 +865,8 @@ def evaluate():
     parser.add_argument("-ca_kv_cache", action="store_true", help="Use cross-attention KV cache")
     parser.add_argument("--use_sliding_encoder_cache", action="store_true", help="Slide encoder KV cache instead of resetting at max context")
     parser.add_argument("--disable_encoder_kv_cache", action="store_true", help="Recompute the full encoder prefix at every streaming step for cache diagnostics.")
-    parser.add_argument("--encoder_cache_diagnostics", action="store_true", help="Print encoder cache vs recomputed-reference diff stats during transcription.")
-    parser.add_argument("--encoder_cache_diagnostic_interval", type=int, default=1, help="Print encoder cache diagnostics every N decode chunks.")
+    parser.add_argument("--encoder_cache_diagnostics", action="store_true", help="Collect encoder cache vs recomputed-reference diff stats.")
+    parser.add_argument("--encoder_cache_diagnostic_interval", type=int, default=1, help="Sample encoder cache diagnostics every N decode chunks.")
     parser.add_argument("--reset_decoder_on_encoder_slide", action="store_true", help="Roll decoder prefix tokens into prompt as sliding encoder cache prunes old audio.")
     parser.add_argument("--decoder_roll_overlap_seconds", type=float, default=5.0, help="Seconds of retained encoder audio kept as overlap before the active decoder prefix during rolling decoder reset.")
     parser.add_argument("--decoder_roll_min_interval_seconds", type=float, default=2.0, help="Minimum seconds between decoder prefix rolls.")
@@ -1380,6 +1380,10 @@ def evaluate():
     avg_latency = np.mean(all_chunk_latencies) if all_chunk_latencies else 0
     rtf = total_processing_time_sec / total_audio_duration_sec if total_audio_duration_sec > 0 else 0
 
+    encoder_cache_diagnostics_summary = " | ".join(
+        encoder_cache_diagnostics_summary_lines(encoder_cache_diagnostic_samples)
+    ) if args.encoder_cache_diagnostics else ""
+
     stats = {
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "evaluation_file": evaluation_file,
@@ -1416,6 +1420,9 @@ def evaluate():
         "disable_encoder_kv_cache": "" if args.offline_whisper else bool(args.disable_encoder_kv_cache),
         "encoder_cache_diagnostics": "" if args.offline_whisper else bool(args.encoder_cache_diagnostics),
         "encoder_cache_diagnostic_interval": "" if args.offline_whisper else int(args.encoder_cache_diagnostic_interval),
+        # Store the complete bucketed result in one field so evaluation_print can
+        # reproduce it without access to the transient per-chunk samples.
+        "encoder_cache_diagnostics_summary": encoder_cache_diagnostics_summary,
         "reset_decoder_on_encoder_slide": "" if args.offline_whisper else bool(args.reset_decoder_on_encoder_slide),
         "decoder_roll_overlap_seconds": "" if args.offline_whisper else float(args.decoder_roll_overlap_seconds),
         "decoder_roll_min_interval_seconds": "" if args.offline_whisper else float(args.decoder_roll_min_interval_seconds),

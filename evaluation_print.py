@@ -98,9 +98,36 @@ def _format_row(row: dict) -> str:
         lines.append(f"MAX CONTEXT:   {row.get('max_sec_context', '')}s")
     if str(row.get("use_sliding_encoder_cache", "")).lower() == "true":
         lines.append("ENC SLIDING:   on")
+    decoder_rolling_enabled = (
+        str(row.get("reset_decoder_on_encoder_slide", "")).lower() == "true"
+    )
+    if decoder_rolling_enabled:
+        lines.append("DEC ROLLING:   on")
+        if not _is_blank(row.get("decoder_roll_overlap_seconds", "")):
+            lines.append(f"DEC ROLL OVL: {_to_float(row.get('decoder_roll_overlap_seconds')):g}s")
+        if not _is_blank(row.get("decoder_roll_min_interval_seconds", "")):
+            lines.append(f"DEC ROLL MIN: {_to_float(row.get('decoder_roll_min_interval_seconds')):g}s")
+        if not _is_blank(row.get("decoder_roll_max_prefix_tokens", "")):
+            lines.append(f"DEC ROLL MAX: {_to_int(row.get('decoder_roll_max_prefix_tokens'))} tokens")
+        if not _is_blank(row.get("decoder_token_time_lag_seconds", "")):
+            lines.append(f"DEC TIME LAG: {_to_float(row.get('decoder_token_time_lag_seconds')):g}s")
     if "disable_encoder_kv_cache" in row and not _is_blank(row.get("disable_encoder_kv_cache", "")):
         cache_mode = "full-prefix" if str(row.get("disable_encoder_kv_cache", "")).lower() == "true" else "kv-cache"
         lines.append(f"ENC CACHE:     {cache_mode}")
+    encoder_cache_diagnostics_enabled = (
+        str(row.get("encoder_cache_diagnostics", "")).lower() == "true"
+    )
+    if encoder_cache_diagnostics_enabled:
+        lines.append("CACHE DIAG:    on")
+        if not _is_blank(row.get("encoder_cache_diagnostic_interval", "")):
+            lines.append(
+                f"CACHE DIAG N:  {_to_int(row.get('encoder_cache_diagnostic_interval'))}"
+            )
+        cache_diagnostics_summary = str(
+            row.get("encoder_cache_diagnostics_summary", "") or ""
+        ).strip()
+        if cache_diagnostics_summary:
+            lines.append(f"CACHE PARITY:  {cache_diagnostics_summary}")
     lines.append(f"MODE:          {evaluation_mode}")
     lines.append(f"WER:           {_fmt_percent(row.get('wer'))}")
     if not is_offline_whisper:
