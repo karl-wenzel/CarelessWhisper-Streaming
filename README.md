@@ -132,6 +132,159 @@ texts_wav_simulation = model.transcribe(simulate_stream=True,
                                         ca_kv_cache=True)
 ```
 
+## Evaluation
+
+`evaluation.py` loads a model, selects a dataset partition from
+`training_code/ds_dict.py`, transcribes the selected samples, calculates the
+requested accuracy and timing metrics, and appends one row to
+`$HOME/ma/data/evaluation.csv`. Streaming transcription results are cached in
+the sibling `$HOME/ma/data/evaluation_cache` directory. Compatible later runs
+can reuse those transcriptions when only evaluation-only metrics change.
+
+The implementation is in the `evaluation/` package. The root files are slim
+command-line endpoints: `evaluation.py` runs and saves evaluations, while
+`evaluation_print.py` reads and prints saved rows without loading a model.
+
+Register datasets in `training_code/ds_dict.py` first. Selected CSV rows must
+provide `wav_path`, `tg_path`, and `raw_text`; an optional `lang` column can
+override the language per sample.
+
+### Running an evaluation
+
+For a local training run, `--model` is resolved below
+`$HOME/ma/data/models/ckpts/<model>/checkpoint/`. Without `--checkpoint`, the
+runner prefers the best WER checkpoint recorded by Lightning and otherwise
+uses the highest checkpoint epoch.
+
+```bash
+python evaluation.py \
+  --model example_training_base_model \
+  --dataset_name LIBRI-960-ALIGNED \
+  --dataset_partition test \
+  --checkpoint 7 \
+  --chunk_size 300 \
+  --device cuda \
+  --beam_size 5 \
+  --ca_kv_cache
+```
+
+ALiBi sliding-cache evaluation with encoder cache-parity diagnostics:
+
+```bash
+python evaluation.py \
+  --model example_alibi_model \
+  --dataset_name REVLONG \
+  --encoder_positional_mode alibi \
+  --chunk_size 300 \
+  --max_sec_context 30 \
+  --use_sliding_encoder_cache \
+  --encoder_cache_diagnostics \
+  --encoder_cache_diagnostic_interval 5 \
+  --beam_size 5
+```
+
+Do not combine parity diagnostics with `--ca_kv_cache`: that path does not
+retain the complete `audio_features` tensor required for the comparison. The
+diagnostic is reported at the end and saved as one concatenated CSV field.
+
+Enable decoder rolling when old decoder text should be retired as the encoder
+window slides:
+
+```bash
+python evaluation.py \
+  --model example_alibi_model \
+  --dataset_name REVLONG \
+  --encoder_positional_mode alibi \
+  --use_sliding_encoder_cache \
+  --reset_decoder_on_encoder_slide \
+  --decoder_roll_overlap_seconds 5 \
+  --decoder_roll_min_interval_seconds 2 \
+  --decoder_roll_max_prefix_tokens 48 \
+  --decoder_token_time_lag_seconds 2
+```
+
+Compare against standard non-streaming Whisper:
+
+```bash
+python evaluation.py \
+  --model small \
+  --offline_whisper \
+  --dataset_name LIBRI-960-ALIGNED \
+  --beam_size 5 \
+  --device cuda
+```
+
+Streaming-only cache, rolling, WIR, prefix-WER, and delay-N options cannot be
+used with `--offline_whisper`.
+
+### Evaluation parameter reference
+
+| Parameter | Default | Meaning and example |
+|---|---:|---|
+| `-h`, `--help` | — | Print CLI help and exit. |
+| `--model NAME` | required | Local run name, CarelessWhisper name with `--cw`, or Whisper name/path with `--offline_whisper`; e.g. `--model small`. |
+| `--dataset_name NAME` | required | Dataset key from `training_code/ds_dict.py`; e.g. `--dataset_name REVLONG`. |
+| `--dataset_partition NAME` | `test` | Dataset partition; e.g. `--dataset_partition val`. |
+| `--dataset_fraction F` | `1.0` | Random dataset fraction; e.g. `--dataset_fraction 0.1`. Cannot be below `1.0` with `--dataset_sample_count`. |
+| `--dataset_sample_count N` | all | Evaluate exactly `N` randomly selected rows; e.g. `--dataset_sample_count 100`. |
+| `--samples_over SECONDS` | off | Keep samples strictly longer than the threshold after other selection; e.g. `--samples_over 30`. |
+| `--checkpoint EPOCH` | automatic | Select `checkpoint-epoch=XXXX.ckpt`; e.g. `--checkpoint 7`. Local runs only. |
+| `--offline_whisper` | off | Evaluate standard, non-streaming Whisper using the model name/path in `--model`. |
+| `--cw` | off | Load a CarelessWhisper base model instead of a local run; e.g. `--cw --model small`. Legacy `-cw` is accepted. |
+| `--force_hf_download` | off | Force a fresh Hugging Face download. Requires `--cw` and bypasses the evaluation cache. |
+| `--device DEVICE` | CUDA if available, else CPU | Inference device; e.g. `--device cuda`. |
+| `--multilingual` | off | Use the multilingual model variant. |
+| `--lang CODE` | inferred | Transcription and normalization language; e.g. `--lang de`. |
+| `--chunk_size N` | `300` | Streaming chunk granularity in milliseconds; e.g. `--chunk_size 40`. |
+| `--beam_size N` | `5` | Number of decoding beams; e.g. `--beam_size 10`. |
+| `--enable_relative_beam_stop` | off | Require at least 20% of beams to emit EOS rather than stopping after the first EOS beam. |
+| `--max_sec_context N` | `30` | Retained audio context in seconds. Legacy mode resets here; sliding mode prunes to this window. |
+| `--encoder_positional_mode MODE` | `auto` | `auto`, `sinusoidal`, or `alibi`. Auto uses checkpoint/config metadata and then the run name. |
+| `--sa_kv_cache` | off | Enable decoder self-attention KV caching. Legacy `-sa_kv_cache` is accepted. |
+| `--ca_kv_cache` | off | Enable decoder cross-attention KV caching. Legacy `-ca_kv_cache` is accepted. |
+| `--use_sliding_encoder_cache` | off | Prune old encoder state instead of performing a full reset. Requires an ALiBi encoder and single-frame streaming mel. |
+| `--disable_encoder_kv_cache` | off | Recompute the full encoder prefix at every step as an uncached baseline. Incompatible with sliding encoder caching. |
+| `--encoder_cache_diagnostics` | off | Compare cached features with a recomputed reference, print a final summary, and save it in the CSV. |
+| `--encoder_cache_diagnostic_interval N` | `1` | Sample parity every `N` decode chunks; e.g. `--encoder_cache_diagnostic_interval 10`. |
+| `--reset_decoder_on_encoder_slide` | off | Roll the decoder prefix after encoder pruning. Requires `--use_sliding_encoder_cache`. |
+| `--decoder_roll_overlap_seconds S` | `5.0` | Encoder-audio overlap retained before the active decoder prefix; e.g. `4`. Must be below `--max_sec_context`. |
+| `--decoder_roll_min_interval_seconds S` | `2.0` | Minimum seconds between rolls; e.g. `3`. |
+| `--decoder_roll_max_prefix_tokens N` | `48` | Maximum recent BPE tokens retained after a roll; e.g. `64`. |
+| `--decoder_token_time_lag_seconds S` | `2.0` | Backdate first-seen token times when deciding which tokens to retire; e.g. `1.5`. |
+| `--decoder_roll_diagnostics` | off | Deprecated compatibility option; currently a no-op. |
+| `--strict_k K...` | `2` | Strict-WER correction distances; e.g. `--strict_k 0 1 2`. |
+| `--wir_n N...` | none | Extra word-instability suffix tolerances; e.g. `--wir_n 0 1 2`. |
+| `--prefix_wer` | off | Save cumulative WER at two-second audio-prefix intervals from 0 through 60 seconds. |
+| `--delay_n_rtf` | off | Calculate perceived RTF/latency while visually delaying the newest word, with a one-second timeout. |
+| `--no_evaluation_cache` | off | Recalculate transcriptions even if a compatible cache exists. |
+| `--verbose` | off | Print additional per-sample information. Legacy `-verbose` is accepted. |
+
+### Printing saved evaluations
+
+Print the three newest rows from the default table:
+
+```bash
+python evaluation_print.py
+```
+
+Print the newest ten rows from another table:
+
+```bash
+python evaluation_print.py \
+  --evaluation_file /path/to/evaluation.csv \
+  --row_count 10
+```
+
+| Parameter | Default | Meaning and example |
+|---|---:|---|
+| `-h`, `--help` | — | Print CLI help and exit. |
+| `--evaluation_file PATH` | `$HOME/ma/data/evaluation.csv` | CSV to read; e.g. `--evaluation_file results/evaluation.csv`. |
+| `--row_count N` | `3` | Newest rows to print, newest first; e.g. `--row_count 10`. Must be positive. |
+
+Cache-parity fields are printed only when `--encoder_cache_diagnostics` was
+enabled for that row. Decoder-roll settings are printed only when
+`--reset_decoder_on_encoder_slide` was enabled.
+
 ## 🦾 Training
 In order to train using LoRA, you can use our existing code. Make sure all the requirements are installed. 
 
