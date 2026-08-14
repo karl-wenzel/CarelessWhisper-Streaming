@@ -2,7 +2,7 @@ import ast
 import unittest
 from pathlib import Path
 
-from evaluation_caching import (
+from evaluation.caching import (
     CACHE_CONTROL_PARAMETER_NAMES,
     EVALUATION_ONLY_PARAMETER_NAMES,
     PRE_EVALUATION_PARAMETER_NAMES,
@@ -64,7 +64,7 @@ class EvaluationCachingContractTests(unittest.TestCase):
             [],
             missing,
             "Every evaluation.py argparse parameter must be classified in "
-            "evaluation_caching.py as pre-evaluation, evaluation-only, or cache-control.",
+            "evaluation/caching.py as pre-evaluation, evaluation-only, or cache-control.",
         )
 
 

@@ -1,4 +1,3 @@
-import argparse
 import hashlib
 import json
 import math
@@ -84,7 +83,7 @@ def validate_parameter_classification(arg_names: list[str]) -> None:
     if unclassified:
         raise ValueError(
             "Evaluation cache parameter classification is incomplete. "
-            f"Classify these argparse options in evaluation_caching.py: {unclassified}"
+            f"Classify these argparse options in evaluation/caching.py: {unclassified}"
         )
 
 
@@ -288,23 +287,3 @@ def _json_safe(value: Any) -> Any:
     if hasattr(value, "item"):
         return _json_safe(value.item())
     return str(value)
-
-
-def cli() -> None:
-    parser = argparse.ArgumentParser(description="Manage cached evaluation transcribe outputs.")
-    parser.add_argument("--evaluation_file", type=str, default=str(DEFAULT_EVALUATION_FILE), help="Evaluation CSV whose sibling cache folder should be managed.")
-    parser.add_argument("--clear", action="store_true", help="Delete the evaluation cache folder.")
-    args = parser.parse_args()
-
-    if args.clear:
-        # The CLI is intentionally limited to the cache folder next to the
-        # selected evaluation CSV, so --clear cannot target arbitrary paths.
-        removed_cache_dir = clear_evaluation_cache(args.evaluation_file)
-        print(f"Evaluation cache cleared: {removed_cache_dir}")
-        return
-
-    parser.print_help()
-
-
-if __name__ == "__main__":
-    cli()

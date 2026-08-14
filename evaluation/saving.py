@@ -46,4 +46,3 @@ def append_evaluation_row(evaluation_file: str | Path, row: dict) -> dict:
             writer.writerow({field: existing_row.get(field, "") for field in fieldnames})
 
     return normalized_row
-
