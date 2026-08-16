@@ -163,6 +163,12 @@ def _format_row(row: dict) -> str:
         if prefix_wer_summary:
             lines.append(f"PREFIX WER:    {prefix_wer_summary}")
         if _has_delay_n_metrics(row):
+            if not _is_blank(row.get("normal_emission_rtf", "")):
+                lines.append(f"NORMAL RTF:    {_to_float(row.get('normal_emission_rtf')):.4f}")
+            if not _is_blank(row.get("normal_emission_weighted_rtf", "")):
+                lines.append(f"NORMAL WRTF:   {_to_float(row.get('normal_emission_weighted_rtf')):.4f}")
+            if not _is_blank(row.get("normal_emission_avg_latency_ms", "")):
+                lines.append(f"NORMAL LAT:    {_fmt_latency_ms(row.get('normal_emission_avg_latency_ms'))}")
             lines.append(f"DELAY-N RTF:   {_to_float(row.get('delay_n_rtf')):.4f}")
             if not _is_blank(row.get("delay_n_weighted_rtf", "")):
                 lines.append(f"DELAY-N WRTF:  {_to_float(row.get('delay_n_weighted_rtf')):.4f}")
@@ -196,4 +202,3 @@ def print_latest_rows(evaluation_file: str | Path = DEFAULT_EVALUATION_FILE, row
 
     latest_rows = list(reversed(rows[-row_count:]))
     print_rows(latest_rows)
-

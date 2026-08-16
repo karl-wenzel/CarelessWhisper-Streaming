@@ -734,6 +734,48 @@ def _delay_n_result_words(result, normalizer) -> list[str]:
     return _normalize_for_eval(_result_text_for_eval(result), normalizer).split()
 
 
+def calculate_normal_display_stats(
+    results,
+    audio_duration: float,
+    chunk_duration_sec: float,
+    normalizer,
+) -> dict[str, float | int]:
+    """Measure visual emission when every newly appended word is shown immediately."""
+    if not results or audio_duration <= 0 or chunk_duration_sec <= 0:
+        return {
+            "perceived_processing_time_sec": 0.0,
+            "rtf": 0.0,
+            "latency_sum_sec": 0.0,
+            "emitted_words": 0,
+        }
+
+    emitted_count = 0
+    emitted_words = 0
+    latency_sum_sec = 0.0
+    total_processing_time_sec = 0.0
+
+    for step, result in enumerate(results):
+        processing_time_sec = float(getattr(result, "processing_time", 0.0) or 0.0)
+        total_processing_time_sec += processing_time_sec
+        audio_time_sec = min(audio_duration, (step + 1) * chunk_duration_sec)
+        available_time_sec = audio_time_sec + processing_time_sec
+        current_words = _delay_n_result_words(result, normalizer)
+
+        # Visual emission is append-based: previously displayed words are not
+        # counted again when a later cumulative result contains them.
+        appended_count = max(0, len(current_words) - emitted_count)
+        emitted_words += appended_count
+        latency_sum_sec += appended_count * max(0.0, available_time_sec - audio_time_sec)
+        emitted_count += appended_count
+
+    return {
+        "perceived_processing_time_sec": float(total_processing_time_sec),
+        "rtf": float(total_processing_time_sec / audio_duration),
+        "latency_sum_sec": float(latency_sum_sec),
+        "emitted_words": int(emitted_words),
+    }
+
+
 def calculate_delay_n_display_stats(
     results,
     audio_duration: float,
@@ -1024,6 +1066,10 @@ def evaluate(args):
     }
     prefix_wer_counts = {}
     delay_n_sample_rtfs = []
+    normal_emission_sample_rtfs = []
+    normal_emission_latency_sum_sec = 0.0
+    normal_emission_emitted_words = 0
+    normal_emission_total_perceived_processing_time_sec = 0.0
     delay_n_latency_sum_sec = 0.0
     delay_n_emitted_words = 0
     delay_n_total_perceived_processing_time_sec = 0.0
@@ -1145,6 +1191,18 @@ def evaluate(args):
                 normalizer,
             )
         if args.delay_n_rtf:
+            normal_emission_stats = calculate_normal_display_stats(
+                results,
+                audio_duration,
+                chunk_duration_sec,
+                normalizer,
+            )
+            normal_emission_sample_rtfs.append(float(normal_emission_stats["rtf"]))
+            normal_emission_latency_sum_sec += float(normal_emission_stats["latency_sum_sec"])
+            normal_emission_emitted_words += int(normal_emission_stats["emitted_words"])
+            normal_emission_total_perceived_processing_time_sec += float(
+                normal_emission_stats["perceived_processing_time_sec"]
+            )
             delay_n_stats = calculate_delay_n_display_stats(
                 results,
                 audio_duration,
@@ -1300,6 +1358,21 @@ def evaluate(args):
         if args.delay_n_rtf and delay_n_sample_rtfs
         else None
     )
+    normal_emission_rtf = (
+        float(np.mean(normal_emission_sample_rtfs))
+        if args.delay_n_rtf and normal_emission_sample_rtfs
+        else None
+    )
+    normal_emission_weighted_rtf = (
+        float(normal_emission_total_perceived_processing_time_sec / total_audio_duration_sec)
+        if args.delay_n_rtf and total_audio_duration_sec > 0
+        else None
+    )
+    normal_emission_avg_latency_ms = (
+        float((normal_emission_latency_sum_sec / normal_emission_emitted_words) * 1000)
+        if args.delay_n_rtf and normal_emission_emitted_words > 0
+        else None
+    )
     delay_n_weighted_rtf = (
         float(delay_n_total_perceived_processing_time_sec / total_audio_duration_sec)
         if args.delay_n_rtf and total_audio_duration_sec > 0
@@ -1375,6 +1448,10 @@ def evaluate(args):
         "prefix_wer_seconds": " ".join(str(seconds) for seconds in PREFIX_WER_SECONDS),
         "prefix_wer_summary": prefix_wer_summary,
         "delay_n_rtf_enabled": bool(args.delay_n_rtf),
+        "normal_emission_rtf": normal_emission_rtf,
+        "normal_emission_weighted_rtf": normal_emission_weighted_rtf,
+        "normal_emission_avg_latency_ms": normal_emission_avg_latency_ms,
+        "normal_emission_emitted_words": "" if normal_emission_emitted_words == 0 else int(normal_emission_emitted_words),
         "delay_n_rtf": delay_n_rtf,
         "delay_n_weighted_rtf": delay_n_weighted_rtf,
         "delay_n_avg_latency_ms": delay_n_avg_latency_ms,
@@ -1405,6 +1482,11 @@ def evaluate(args):
         print(prefix_wer_summary.replace(" | ", "\n") if prefix_wer_summary else "No prefix WER entries collected.")
     if args.delay_n_rtf:
         print()
+        print("=== Normal Visual Emission ===")
+        print(f"Avg sample RTF: {normal_emission_rtf:.4f}" if normal_emission_rtf is not None else "Avg sample RTF: N/A")
+        print(f"Weighted RTF:   {normal_emission_weighted_rtf:.4f}" if normal_emission_weighted_rtf is not None else "Weighted RTF:   N/A")
+        print(f"Avg latency:    {normal_emission_avg_latency_ms:.1f} ms" if normal_emission_avg_latency_ms is not None else "Avg latency:    N/A")
+        print()
         print("=== Delay-N Visual Emission ===")
         print(f"Avg sample RTF: {delay_n_rtf:.4f}" if delay_n_rtf is not None else "Avg sample RTF: N/A")
         print(f"Weighted RTF:   {delay_n_weighted_rtf:.4f}" if delay_n_weighted_rtf is not None else "Weighted RTF:   N/A")
@@ -1416,4 +1498,3 @@ def evaluate(args):
             print(line)
     print()
     print_latest_rows(evaluation_file, row_count=1)
-

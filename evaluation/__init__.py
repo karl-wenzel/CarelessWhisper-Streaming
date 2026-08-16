@@ -2,6 +2,7 @@
 
 __all__ = [
     "_filter_samples_over_duration",
+    "calculate_normal_display_stats",
     "calculate_delay_n_display_stats",
     "calculate_word_instability_with_suffix_tolerance",
     "evaluate",

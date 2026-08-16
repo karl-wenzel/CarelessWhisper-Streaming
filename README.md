@@ -255,7 +255,7 @@ used with `--offline_whisper`.
 | `--strict_k K...` | `2` | Strict-WER correction distances; e.g. `--strict_k 0 1 2`. |
 | `--wir_n N...` | none | Extra word-instability suffix tolerances; e.g. `--wir_n 0 1 2`. |
 | `--prefix_wer` | off | Save cumulative WER at two-second audio-prefix intervals from 0 through 60 seconds. |
-| `--delay_n_rtf` | off | Calculate perceived RTF/latency while visually delaying the newest word, with a one-second timeout. |
+| `--delay_n_rtf` | off | Compare normal visual-emission RTF/latency with a policy that delays the newest word, with a one-second timeout. |
 | `--no_evaluation_cache` | off | Recalculate transcriptions even if a compatible cache exists. |
 | `--verbose` | off | Print additional per-sample information. Legacy `-verbose` is accepted. |
 
@@ -330,6 +330,129 @@ python training_code/train.py \
 --streaming_fraction 0.25 \
 --top_k 5 \
 ```
+
+The current `train.py` implementation supports the combined LoRA and streaming
+training path, so normal runs must specify both `--lora` and
+`--streaming_train`. Full streaming training also requires
+`--simulate_stream`.
+
+### New training configurations
+
+Use different LoRA capacities for the encoder and decoder while retaining
+`--rank` as the fallback for either omitted value:
+
+```bash
+python training_code/train.py \
+  --lora \
+  --streaming_train \
+  --simulate_stream \
+  --dataset LIBRI-960-ALIGNED \
+  --name split_rank_alibi \
+  --size turbo \
+  --rank 16 \
+  --encoder_rank 8 \
+  --decoder_rank 32 \
+  --encoder_positional_mode alibi \
+  --gran 15
+```
+
+Train on the stale hidden-state regime produced by sliding encoder-cache
+inference:
+
+```bash
+python training_code/train.py \
+  --lora \
+  --streaming_train \
+  --simulate_stream \
+  --dataset REVLONG \
+  --name stale_cache_alibi \
+  --size turbo \
+  --encoder_positional_mode alibi \
+  --stale_encoder_cache_train \
+  --stale_cache_context_seconds 25 \
+  --stale_cache_max_stale_seconds 30 \
+  --stale_cache_fresh_fraction 0.2 \
+  --stale_cache_bucket_weights 1,2,4 \
+  --streaming_fraction 0.25
+```
+
+Stale-cache training mixes fresh retained-window recomputations with points
+whose encoder state is assembled by simulating chunked KV-cache inference.
+It requires ALiBi and cannot be combined with `--random_masking`.
+
+Resume a run, including Lightning optimizer and trainer state:
+
+```bash
+python training_code/train.py \
+  --lora --streaming_train --simulate_stream \
+  --dataset LIBRI-960-ALIGNED \
+  --name resumed_run \
+  --ckpt previous_run
+```
+
+`--ckpt` accepts either a checkpoint file or a run name, in which case the
+latest epoch checkpoint is selected. To copy model weights but start a new
+optimizer/trainer history, use `--warmstart previous_run` instead.
+
+### Training parameter reference
+
+| Parameter | Default | Meaning and example |
+|---|---:|---|
+| `-h`, `--help` | — | Print the generated training CLI help and exit. |
+| `--lora` | off | Enable LoRA training. Required by the currently implemented training path. |
+| `--streaming_train` | off | Train at sequential streaming sample points. Requires `--simulate_stream` and, in the current path, `--lora`. |
+| `--simulate_stream` | off | Supply streamed spectrogram prefixes rather than ordinary full inputs. |
+| `--name NAME` | `model` | Output run name below `$HOME/ma/data/models`; e.g. `--name turbo_alibi_r16`. |
+| `--size SIZE` | `tiny` | Whisper base architecture, such as `tiny`, `base`, `small`, `medium`, `large-v2`, or `turbo`. |
+| `--lang CODE` | `en` | Whisper language token and normalization language; e.g. `--lang de`. |
+| `--multilingual` | off | Expect multilingual data and use each row's `lang` field when available. |
+| `--dataset NAME...` | `TIMIT-WORD` | One or more keys from `training_code/ds_dict.py`; e.g. `--dataset LIBRI-960-ALIGNED REVLONG`. Train and validation paths are combined. |
+| `--custom_len N` | `0` | Limit each dataset to `N` samples; `0` uses its complete length. Useful for short experiments. |
+| `--lmdb` | off | Use configured `train-lmdb` dataset entries where the loader supports LMDB instead of ordinary disk reads. |
+| `--precomputed_features` | off | Read manifests produced by `utils/precompute_aligned_dataset.py`; dataset entries must provide `precomputed` train/val paths. |
+| `--epochs N` | `10` | Maximum training epochs; e.g. `--epochs 20`. |
+| `--max_training_time S` | unlimited | Wall-clock budget in seconds, starting before baseline validation and checked between epochs; e.g. `--max_training_time 21600`. Must be positive. |
+| `--batch_size N` | `16` | Per-step training and validation batch size; e.g. `--batch_size 32`. |
+| `--gacc N` | `1` | Lightning gradient-accumulation steps. Effective batch size is `batch_size × gacc`. |
+| `--learning_rate LR` | `0.0001` | Adam learning rate; e.g. `--learning_rate 1e-5`. |
+| `--weight_decay W` | `0.01` | Adam weight-decay factor. |
+| `--adam_epsilon E` | `1e-6` | Adam numerical-stability epsilon. |
+| `--warmup_steps N` | `100` | Scheduler warm-up steps. |
+| `--precision MODE` | `16` | Lightning precision setting; examples include `16`, `32`, or a supported mixed-precision mode. |
+| `--num_worker N` | `16` | DataLoader worker processes per loader; use `0` for synchronous loading. |
+| `--strategy NAME` | `ddp` | Lightning distributed strategy, such as `ddp`, `fsdp`, or `ddp_find_unused_parameters_true`. |
+| `--fast_dev_run N` | off | Ask Lightning to run only `N` development batches for a pipeline sanity check. |
+| `--no_logger` | off | Disable the W&B/Lightning logger. |
+| `--top_k N` | `1` | Number of lowest-validation-WER epoch checkpoints to keep. `-1` keeps all. Step checkpoints are also saved every 500 training steps. |
+| `--early_stop` | off | Stop after validation WER fails to improve for two validation checks. |
+| `--ckpt PATH_OR_RUN` | none | Resume complete Lightning training state from a file or the latest epoch of a named local run. |
+| `--warmstart RUN` | none | Copy weights from the latest checkpoint of another run, but start new optimizer and trainer state. |
+| `--use_from_ft_ckpt` | off | Initialize through the packaged fine-tuned streaming-checkpoint loader instead of constructing from the base Whisper training loader. |
+| `--save_untrained` | off | Save the freshly initialized or warm-started model as `checkpoint-epoch=-001.ckpt` and exit without training. |
+| `--rank N` | `16` | Global LoRA rank and fallback for both model halves; e.g. `--rank 32`. |
+| `--encoder_rank N` | `--rank` | Encoder LoRA rank override; e.g. `--encoder_rank 8`. |
+| `--decoder_rank N` | `--rank` | Decoder self- and cross-attention LoRA rank override; e.g. `--decoder_rank 32`. Resolved ranks are stored in new checkpoints. |
+| `--lora_ckpt PATH` | none | Legacy LoRA-checkpoint argument. It is normalized and stored in configuration but is not currently applied by `train.py`; use `--ckpt` or `--warmstart` instead. |
+| `--gran N` | `15` | Encoder attention granularity in 20 ms encoder frames. `15` corresponds to a 300 ms chunk. |
+| `--extra_gran_blocks N` | `1` | Extra causal encoder blocks initially visible as look-ahead/initialization context. |
+| `--streaming_fraction F` | `1.0` | Fraction of eligible streaming positions trained per sample; e.g. `--streaming_fraction 0.25`. |
+| `--streaming_random` | off | Randomize selected streaming positions instead of processing the chosen points sequentially. |
+| `--random_masking` | off | Train with randomly sized causal masking blocks instead of regular fixed-granularity stream points. Incompatible with stale-cache training. |
+| `--num_slices N` | `20` | Number of random-mask sample points/slices considered when `--random_masking` is enabled. |
+| `--encoder_positional_mode MODE` | `sinusoidal` | Encoder positions: `sinusoidal` or `alibi`. ALiBi is required for stale sliding-cache training. |
+| `--stale_encoder_cache_train` | off | Mix fresh retained-window points with encoder features created through a simulated sliding KV cache. |
+| `--stale_cache_context_seconds S` | `25.0` | Retained encoder window for stale training, rounded down to `--gran`; it must not exceed Whisper's 30-second audio context. |
+| `--stale_cache_max_stale_seconds S` | `30.0` | Additional audio duration beyond the retained window available for selecting increasingly stale points. Must be non-negative. |
+| `--stale_cache_fresh_fraction F` | `0.2` | Requested fraction of selected points encoded as fresh retained windows; values are clamped to `[0,1]`. |
+| `--stale_cache_bucket_weights CSV` | `1` | Relative sampling weights for equal-width staleness buckets; e.g. `1,2,4` favors older states. Values must be non-negative with at least one positive weight. |
+| `--self_supervision` | off | Replace available teacher labels with the decoder's current predictions up to predicted EOT in the regular streaming loss path. |
+| `--extra_eval` | off | Calculate RWER and ARWER during training validation in addition to WER. |
+
+The script writes `cfg.json`, W&B logs unless disabled, WER-ranked epoch
+checkpoints, and periodic step checkpoints below the run's model directories.
+It performs a full baseline validation before fresh or resumed training. The
+`--max_training_time` budget includes that baseline validation but excludes
+model construction, warm-start loading, and trainer initialization.
 
 For more options and training configurations, run:
 ```bash
